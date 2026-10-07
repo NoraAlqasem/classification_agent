@@ -16,7 +16,7 @@ uses the YAML baseline; LLM tuning begins after its results are available.
 - CSV datasets, image files, and matching pretrained ResNet backbone weights.
 - An API key for the configured hosted LLM for full training sessions.
 
-Dataset validation and the test suite can run without a GPU or live API calls.
+Dataset validation can run without a GPU or LLM credentials.
 Datasets, pretrained weights, and training outputs are excluded from Git.
 
 ## Installation
@@ -183,18 +183,6 @@ ONNX exports provide one logits tensor per head with a dynamic batch dimension.
 The adjacent metadata JSON describes class ordering and image preprocessing.
 Apply softmax separately to each head when probabilities are needed.
 
-## Tests
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-The suite covers input validation, graph execution, retry behavior, experiment
-records, checkpoint evaluation, and ONNX export. API calls and training subprocesses
-are mocked; model and export checks run on CPU. For numerical ONNX checks, install
-`onnxruntime` or use the suite's ONNX ReferenceEvaluator fallback. These checks do
-not replace a real CUDA/NCCL training run.
-
 ## Project layout
 
 | Path | Purpose |
@@ -205,5 +193,4 @@ not replace a real CUDA/NCCL training run.
 | [tools/](tools/) | Configuration, metrics, weights, and artifact helpers. |
 | [memory/](memory/) | Experiment storage and session paths. |
 | [config/defaults.yaml](config/defaults.yaml) | Baseline agent and trainer settings. |
-| [tests/](tests/) | Automated regression and integration checks. |
 | [docs/AGENT_PIPELINE.md](docs/AGENT_PIPELINE.md) | Detailed workflow, tuning rules, output formats, and standalone resume. |

@@ -24,7 +24,7 @@
 - [13. Interruptions, standalone evaluation, and resume](#13-interruptions-standalone-evaluation-and-resume)
   - [Evaluating an existing checkpoint](#evaluating-an-existing-checkpoint)
   - [Resuming the standalone trainer](#resuming-the-standalone-trainer)
-- [14. Code reference and verification](#14-code-reference-and-verification)
+- [14. Code reference](#14-code-reference)
 
 ## 1. Purpose and terminology
 
@@ -414,7 +414,7 @@ Use settings and dataset mappings consistent with that checkpoint, including any
 
 Standalone resume continues the existing experiment folder and can append training metrics. It does not rerun the agent's test/memory/summary stages or automatically refresh previously saved experiment JSON, checksums, or reports. Use a new agent invocation for a new tuning session; the agent CLI has no whole-session resume option.
 
-## 14. Code reference and verification
+## 14. Code reference
 
 | File / directory | Responsibility |
 |---|---|
@@ -449,4 +449,3 @@ Standalone resume continues the existing experiment folder and can append traini
 | [training/test_resnet.py](../training/test_resnet.py) | Inference, full-denominator scoring, class metrics, and confusion matrices. |
 | [training/export.py](../training/export.py) | ONNX creation, checking, and metadata. |
 | [training/artifact_paths.py](../training/artifact_paths.py) | Current layout and historical artifact path compatibility. |
-| [tests/](../tests/) | Automated regression and integration verification. |
