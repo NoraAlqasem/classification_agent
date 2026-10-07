@@ -1,40 +1,163 @@
 digraph AgentWorkflow {
-  graph [rankdir=TB, bgcolor="#14101e", pad=0.3, nodesep=0.4, ranksep=0.55, splines=ortho];
-  node [shape=box, style="rounded,filled", fillcolor="#2b1d40", color="#a78bfa", fontcolor="#f5f0ff", penwidth=1.4, fontname="DejaVu Sans", fontsize=12, margin="0.18,0.12", group=main];
-  edge [color="#b9a0ec", fontcolor="#ddd0f6", penwidth=1.3, fontname="DejaVu Sans", fontsize=10, arrowsize=0.7, weight=10];
+  graph [
+    rankdir=TB,
+    bgcolor="#202124",
+    pad=0.3,
+    nodesep=0.4,
+    ranksep=0.55,
+    splines=ortho
+  ];
 
-  input [label="Load environment\nand CLI inputs"];
-  validate [label="Validate inputs\nand CSV datasets"];
-  valid [label="Dataset\nvalid?", shape=diamond, style=filled, fillcolor="#3b2357", color="#c4a0ff"];
-  baseline [label="Prepare first configuration\nfrom YAML"];
-  train [label="Train one\nResNet experiment"];
-  monitor [label="Read validation\nmetrics"];
-  split [label="Decision split\nis test?", shape=diamond, style=filled, fillcolor="#3b2357", color="#c4a0ff"];
-  test [group=test, label="Evaluate best validation\ncheckpoint on test CSV"];
-  evaluate [label="LLM evaluation\nand verified metric checks"];
-  memory [label="Save experiment\nand update memory"];
-  stop [label="Stop condition\nreached?", shape=diamond, style=filled, fillcolor="#3b2357", color="#c4a0ff"];
-  optimize [group=tune, label="Ask LLM for\nconfiguration changes"];
-  proposal [group=proposal, label="Optimization\nvalid?", shape=diamond, style=filled, fillcolor="#3b2357", color="#c4a0ff"];
-  export [label="Export best\neligible checkpoint", fillcolor="#34204b", color="#d0b3ff"];
-  report [label="Save final report", fillcolor="#34204b", color="#d0b3ff"];
-  end [label="End session", fillcolor="#34204b", color="#d0b3ff"];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#20354D",
+    color="#6FA8DC",
+    fontcolor="#E6F1FF",
+    fontname="DejaVu Sans",
+    fontsize=12,
+    margin="0.18,0.12",
+    group=main
+  ];
 
-  input -> validate -> valid;
-  valid -> baseline [xlabel="Yes"];
-  valid -> report [xlabel="No", constraint=false, weight=0];
-  baseline -> train -> monitor -> split;
-  split -> test [xlabel="Yes", weight=0];
-  split -> evaluate [xlabel="No"];
-  test -> evaluate [weight=0];
-  evaluate -> memory -> stop;
-  stop -> optimize [xlabel="No", weight=0];
-  stop -> export [xlabel="Yes"];
-  optimize -> proposal;
-  proposal -> train [xlabel="Yes: next attempt", constraint=false];
-  proposal -> export [xlabel="No"];
-  export -> report -> end;
+  edge [
+    color="#9AA0A6",
+    fontcolor="#D1D5DB",
+    fontname="DejaVu Sans",
+    fontsize=10,
+    arrowsize=0.7,
+    weight=10
+  ];
 
-  { rank=same; split; test; }
-  { rank=same; stop; optimize; proposal; }
+  user_input [label="user_input"];
+  dataset_validator [label="dataset_validator"];
+
+  valid [
+    label="Dataset\nvalid?",
+    shape=diamond,
+    style=filled,
+    fillcolor="#352B45",
+    color="#B6A0D1",
+    fontcolor="#EDE2FA"
+  ];
+
+  config_generator [label="config_generator"];
+  trainer [label="trainer"];
+  monitor [label="monitor"];
+
+  split [
+    label="Decision split\nis test?",
+    shape=diamond,
+    style=filled,
+    fillcolor="#352B45",
+    color="#B6A0D1",
+    fontcolor="#EDE2FA"
+  ];
+
+  test_checkpoint [
+    label="test_checkpoint",
+    group=test
+  ];
+
+  decision [
+    label="decision\nStop condition\nreached?",
+    shape=diamond,
+    style=filled,
+    fillcolor="#352B45",
+    color="#B6A0D1",
+    fontcolor="#EDE2FA"
+  ];
+
+  config_optimizer [
+    label="config_optimizer",
+    group=tune
+  ];
+
+  proposal [
+    label="Optimization\nvalid?",
+    group=proposal,
+    shape=diamond,
+    style=filled,
+    fillcolor="#352B45",
+    color="#B6A0D1",
+    fontcolor="#EDE2FA"
+  ];
+
+  retries [
+    label="Correction requests\nremaining?",
+    group=proposal,
+    shape=diamond,
+    style=filled,
+    fillcolor="#352B45",
+    color="#B6A0D1",
+    fontcolor="#EDE2FA"
+  ];
+
+  correct [
+    label="Request corrected proposal\nwith exact validation error\n(up to 2 additional proposals)",
+    group=correction
+  ];
+
+  onnx_exporter [
+    label="onnx_exporter",
+    fillcolor="#20362F",
+    color="#71A28C",
+    fontcolor="#D8EEE3"
+  ];
+
+  reporter [
+    label="reporter",
+    fillcolor="#20362F",
+    color="#71A28C",
+    fontcolor="#D8EEE3"
+  ];
+
+  end [
+    label="End session",
+    fillcolor="#20362F",
+    color="#71A28C",
+    fontcolor="#D8EEE3"
+  ];
+
+  user_input -> dataset_validator -> valid;
+
+  valid -> config_generator [xlabel="Yes"];
+  valid -> reporter [
+    xlabel="No",
+    constraint=false,
+    weight=0
+  ];
+
+  config_generator -> trainer -> monitor -> split;
+
+  split -> test_checkpoint [xlabel="Yes", weight=0];
+  split -> decision [xlabel="No"];
+  test_checkpoint -> decision [weight=0];
+
+  decision -> config_optimizer [xlabel="No", weight=0];
+  decision -> onnx_exporter [xlabel="Yes"];
+
+  config_optimizer -> proposal;
+
+  proposal -> trainer [
+    xlabel="Yes: next attempt",
+    constraint=false,
+    weight=0
+  ];
+
+  proposal -> retries [xlabel="No"];
+  retries -> correct [xlabel="Yes", weight=0];
+
+  correct -> proposal [
+    xlabel="Validate again",
+    constraint=false,
+    weight=0
+  ];
+
+  retries -> onnx_exporter [
+    xlabel="No: stop with error",
+    style=dashed
+  ];
+
+  onnx_exporter -> reporter -> end;
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from typing import Any
 
 from langchain_core.tools import tool
@@ -15,11 +16,25 @@ VALID_RESNET_CONFIG_KEYS = frozenset({
 VALID_RESNET_CONFIG_KEYS_DOC = ", ".join(sorted(VALID_RESNET_CONFIG_KEYS))
 HYPERPARAMETER_KEYS = frozenset({
     "epochs", "batch_size", "img_size", "lr", "weight_decay", "gamma",
-    "patience", "head_loss_weights",
+    "patience", "head_loss_weights", "alpha_json",
 })
 MODEL_SELECTION_KEYS = frozenset({"arch", "weights"})
 TUNABLE_CONFIG_KEYS = HYPERPARAMETER_KEYS | MODEL_SELECTION_KEYS
 PROTECTED_CONFIG_KEYS = VALID_RESNET_CONFIG_KEYS - TUNABLE_CONFIG_KEYS
+
+
+def get_optimizer_hyperparameter_limit() -> int:
+    """Read the maximum changed hyperparameter keys allowed in one proposal."""
+    name = "LLM_OPTIMIZATION_MAX_HYPERPARAMETERS"
+    raw = os.getenv(name, "5")
+    error = f"{name} must be a positive integer; got {raw!r}."
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(error) from exc
+    if value <= 0:
+        raise ValueError(error)
+    return value
 
 
 def sanitize_resnet_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:

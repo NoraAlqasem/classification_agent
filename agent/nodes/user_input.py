@@ -10,7 +10,9 @@ import yaml
 from rich.console import Console
 from rich.prompt import Prompt
 
+from agent.llm_context import get_context_limits
 from agent.state import AgentState
+from tools.config_tools import get_optimizer_hyperparameter_limit
 
 console = Console()
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -68,6 +70,11 @@ def user_input_node(state: AgentState) -> AgentState:
     defaults = _load_defaults()
     interactive = state.get("interactive", sys.stdin.isatty())
     errors: list[str] = []
+    for validate_settings in (get_context_limits, get_optimizer_hyperparameter_limit):
+        try:
+            validate_settings()
+        except ValueError as exc:
+            errors.append(str(exc))
     console.rule("[bold cyan]Autonomous ResNet Training Agent[/bold cyan]")
     console.print("[dim]Multi-head classification · PyTorch DistributedDataParallel[/dim]\n")
 

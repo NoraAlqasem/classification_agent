@@ -146,14 +146,14 @@ def reporter_node(state: AgentState) -> AgentState:
         "recommendations": best.get("evaluation", {}).get("recommendations", []),
         "errors": errors,
     })
-    report_metrics = compact_metrics(best_metrics)
-    report_metrics.pop("validation_metrics", None)
-    llm_context = {
-        **context, "best_metrics": report_metrics,
-        "best_validation_metrics": compact_metrics(validation_metrics),
-    }
     narrative = ""
     try:
+        report_metrics = compact_metrics(best_metrics)
+        report_metrics.pop("validation_metrics", None)
+        llm_context = {
+            **context, "best_metrics": report_metrics,
+            "best_validation_metrics": compact_metrics(validation_metrics),
+        }
         response = invoke_logged_llm([
             SystemMessage(content=(
                 "Write a concise Markdown interpretation of this multihead ResNet classification session. "

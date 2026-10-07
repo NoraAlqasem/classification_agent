@@ -15,7 +15,7 @@ class AgentState(TypedDict, total=False):
     data_root: str
     heads: list[str]
     weights_path: str
-    alpha_json: str
+    alpha_json: str | None
     head_loss_weights: dict[str, float]
     nproc_per_node: int
     interactive: bool
