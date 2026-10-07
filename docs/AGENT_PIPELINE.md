@@ -84,7 +84,7 @@ The first experiment uses the YAML training baseline before any LLM call. The fi
 
 ## 3. Environment and installation
 
-Follow the [README installation steps](../README.md#installation) to create an environment and choose a compatible CUDA dependency profile. Dataset paths, images, and pretrained weights must be supplied locally.
+Follow the [README installation steps](../README.md#installation) to create an environment and install `requirements.txt`, which pins the CUDA 12.4 PyTorch/Torchvision builds. Dataset paths, images, and pretrained weights must be supplied locally.
 
 The main dependencies are:
 

@@ -29,17 +29,18 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-For the pinned CUDA 12.4 profile:
+Install all dependencies, including the pinned CUDA 12.4 builds:
 
 ```bash
-python -m pip install -r requirements-cu124.txt
+python -m pip install -r requirements.txt
 ```
 
-For another CUDA runtime, install a compatible PyTorch/Torchvision pair using the
-[PyTorch installation guide](https://pytorch.org/get-started/locally/), then install
-`requirements.txt`. The CUDA 12.4 profile pins PyTorch 2.6.0 and Torchvision 0.21.0.
-The existing `uv.lock` resolves a different runtime on Linux; use the pip profile
-above when you need CUDA 12.4.
+`requirements.txt` pins PyTorch 2.6.0 and Torchvision 0.21.0 to their CUDA 12.4
+builds. For another CUDA runtime, update the PyTorch/Torchvision pins and wheel
+index in that file using the
+[PyTorch installation guide](https://pytorch.org/get-started/locally/).
+The existing `uv.lock` resolves a different runtime on Linux; use the pip command
+above for this CUDA 12.4 setup.
 
 Check your training environment:
 
