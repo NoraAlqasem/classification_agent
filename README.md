@@ -127,22 +127,6 @@ Each CSV must include:
 
 - `root_folder`
 - `image_name`
-- one label column for each configured classification head
-
-Additional columns are allowed.
-
----
-
-## Validate the Dataset
-
-```bash
-python main.py \
-  --validate-only \
-  --arch resnet18 \
-  --weights weights/pretrained/resnet18.pth
-```
-
-Validation checks dataset structure, labels, image paths, and class consistency before training begins.
 
 ---
 
