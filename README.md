@@ -54,17 +54,7 @@ Create a Conda environment with Python 3.12:
 
 ```bash
 conda create -n classification-agent python=3.12 -y
-```
-
-Activate the environment:
-
-```bash
 conda activate classification-agent
-```
-
-Upgrade pip and install the dependencies:
-
-```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
