@@ -1,0 +1,44 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.agents/
+.aws/
+.codex/
+*.pem
+*.key
+
+# Python environments, caches, and build artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local datasets, pretrained weights, and generated experiments
+/data/
+/weights/
+/runs/
+*.pth
+*.pt
+*.onnx
+*.log
+*.ses
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+*~
+*.swp

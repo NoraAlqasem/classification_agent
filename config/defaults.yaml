@@ -1,0 +1,22 @@
+# Paths and labels come from user input. Batch size and workers are PER GPU.
+agent:
+  decision_split: test
+  target_metric: mean_acc
+  target_value: 0.99
+  max_attempts: 40
+  export_format: onnx
+  nproc_per_node: 1
+
+training:
+  arch: resnet50
+  epochs: 2
+  batch_size: 32
+  num_workers: 4
+  img_size: [224, 224]
+  lr: 0.0001
+  weight_decay: 0.0001
+  gamma: 1.0
+  patience: 10
+  monitor: mean
+  out: runs/resnet
+  name: experiment

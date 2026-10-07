@@ -1,0 +1,6 @@
+# CUDA 12.4 profile for the resnet-agent Python 3.12 environment.
+# Exact build pins preserve the matching CUDA runtime when installing dependencies.
+--extra-index-url https://download.pytorch.org/whl/cu124
+-r requirements.txt
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
