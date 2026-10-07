@@ -48,28 +48,9 @@ For example, `max_attempts: 40` and `epochs: 2` allow up to 40 experiments. The 
 
 The entry point is [main.py](../main.py). It loads `.env`, parses command-line arguments, checks the API key for a full run, and streams the compiled LangGraph state.
 
-```mermaid
-flowchart TD
-    A[Load environment and CLI inputs] --> B[Validate inputs and CSV datasets]
-    B --> C{Dataset valid?}
-    C -->|No| R[Save final report]
-    C -->|Yes| D[Prepare first configuration from YAML]
-    D --> E[Train one ResNet experiment]
-    E --> F[Read validation metrics]
-    F --> G{Decision split is test?}
-    G -->|Yes| H[Evaluate best validation checkpoint on test CSV]
-    G -->|No| I[Evaluate recorded results]
-    H --> I
-    I --> J[Save experiment and update memory]
-    J --> K{Stop condition reached?}
-    K -->|No| L[Ask LLM for configuration changes]
-    L --> M{Optimization valid?}
-    M -->|Yes| E
-    M -->|No| N[Export best eligible checkpoint]
-    K -->|Yes| N
-    N --> R
-    R --> Z[End session]
-```
+![Agent workflow: validate datasets, train and evaluate, tune settings, then export and report.](assets/agent-workflow.svg)
+
+[Editable diagram source](assets/agent-workflow.dot).
 
 The graph in [agent/graph.py](../agent/graph.py) follows this sequence:
 

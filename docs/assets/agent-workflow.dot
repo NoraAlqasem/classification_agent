@@ -1,0 +1,40 @@
+digraph AgentWorkflow {
+  graph [rankdir=TB, bgcolor="#ffffff", pad=0.3, nodesep=0.4, ranksep=0.55, splines=ortho];
+  node [shape=box, style="rounded,filled", fillcolor="#eff6ff", color="#2563eb", fontcolor="#172554", fontname="DejaVu Sans", fontsize=12, margin="0.18,0.12", group=main];
+  edge [color="#475569", fontcolor="#334155", fontname="DejaVu Sans", fontsize=10, arrowsize=0.7, weight=10];
+
+  input [label="Load environment\nand CLI inputs"];
+  validate [label="Validate inputs\nand CSV datasets"];
+  valid [label="Dataset\nvalid?", shape=diamond, style=filled, fillcolor="#fef3c7", color="#d97706"];
+  baseline [label="Prepare first configuration\nfrom YAML"];
+  train [label="Train one\nResNet experiment"];
+  monitor [label="Read validation\nmetrics"];
+  split [label="Decision split\nis test?", shape=diamond, style=filled, fillcolor="#fef3c7", color="#d97706"];
+  test [group=test, label="Evaluate best validation\ncheckpoint on test CSV"];
+  evaluate [label="LLM evaluation\nand verified metric checks"];
+  memory [label="Save experiment\nand update memory"];
+  stop [label="Stop condition\nreached?", shape=diamond, style=filled, fillcolor="#fef3c7", color="#d97706"];
+  optimize [group=tune, label="Ask LLM for\nconfiguration changes"];
+  proposal [group=proposal, label="Optimization\nvalid?", shape=diamond, style=filled, fillcolor="#fef3c7", color="#d97706"];
+  export [label="Export best\neligible checkpoint", fillcolor="#ecfdf5", color="#059669", fontcolor="#064e3b"];
+  report [label="Save final report", fillcolor="#ecfdf5", color="#059669", fontcolor="#064e3b"];
+  end [label="End session", fillcolor="#ecfdf5", color="#059669", fontcolor="#064e3b"];
+
+  input -> validate -> valid;
+  valid -> baseline [xlabel="Yes"];
+  valid -> report [xlabel="No", constraint=false, weight=0];
+  baseline -> train -> monitor -> split;
+  split -> test [xlabel="Yes", weight=0];
+  split -> evaluate [xlabel="No"];
+  test -> evaluate [weight=0];
+  evaluate -> memory -> stop;
+  stop -> optimize [xlabel="No", weight=0];
+  stop -> export [xlabel="Yes"];
+  optimize -> proposal;
+  proposal -> train [xlabel="Yes: next attempt", constraint=false];
+  proposal -> export [xlabel="No"];
+  export -> report -> end;
+
+  { rank=same; split; test; }
+  { rank=same; stop; optimize; proposal; }
+}
