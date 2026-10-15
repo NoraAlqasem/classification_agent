@@ -1,9 +1,9 @@
 # Paths and labels come from user input. Batch size and workers are PER GPU.
 agent:
   decision_split: test
-  target_metric: mean_acc
+  target_metric: mean_acc  # Choices: mean_acc, macro_acc, HEAD_acc, HEAD_macro_acc
   target_value: 0.99
-  max_attempts: 40
+  max_attempts: 2
   export_format: onnx
   nproc_per_node: 1
 
