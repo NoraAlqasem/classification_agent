@@ -40,8 +40,18 @@ def _parse_results_csv(csv_path: Path, monitor: str = "mean") -> dict[str, Any]:
     for head in heads:
         if f"{head}_Loss" not in columns:
             raise ValueError(f"Missing loss column for head {head}")
-    if monitor != "mean" and monitor not in heads:
+    if monitor == "mean":
+        score_column = "MeanAcc"
+    elif monitor == "macro":
+        score_column = "MacroAcc"
+    elif monitor in heads:
+        score_column = f"{monitor}_Acc"
+    elif monitor.endswith("_macro") and monitor[:-6] in heads:
+        score_column = f"{monitor[:-6]}_MacroAcc"
+    else:
         raise ValueError(f"Checkpoint monitor '{monitor}' is absent from the metric log")
+    if score_column not in columns:
+        raise ValueError(f"Checkpoint monitor '{monitor}' requires missing metric column '{score_column}'")
     for row in rows:
         row["Epoch"] = int(row["Epoch"])
     train = sorted((row for row in rows if row["Split"].strip().lower() == "train"), key=lambda row: row["Epoch"])
@@ -53,7 +63,6 @@ def _parse_results_csv(csv_path: Path, monitor: str = "mean") -> dict[str, Any]:
     if train_epochs != val_epochs or len(set(val_epochs)) != len(val_epochs):
         raise ValueError("Training metric log must contain exactly one train/val pair per epoch")
 
-    score_column = "MeanAcc" if monitor == "mean" else f"{monitor}_Acc"
     valid = [row for row in val if _finite_number(row.get(score_column)) is not None]
     if not valid:
         raise ValueError(f"No finite validation values for checkpoint monitor {monitor}")
@@ -61,7 +70,12 @@ def _parse_results_csv(csv_path: Path, monitor: str = "mean") -> dict[str, Any]:
     final = val[-1]
     loss_columns = ["TotalLoss", *(f"{head}_Loss" for head in heads)]
     nonfinite_loss = any(_finite_number(row.get(column)) is None for row in rows for column in loss_columns)
-    nonfinite_accuracy = any(_finite_number(row.get(column)) is None for row in rows for column in ["MeanAcc", *(f"{head}_Acc" for head in heads)])
+    macro_heads = [head for head in heads if f"{head}_MacroAcc" in columns]
+    accuracy_columns = ["MeanAcc", *(f"{head}_Acc" for head in heads)]
+    if "MacroAcc" in columns:
+        accuracy_columns.append("MacroAcc")
+    accuracy_columns.extend(f"{head}_MacroAcc" for head in macro_heads)
+    nonfinite_accuracy = any(_finite_number(row.get(column)) is None for row in rows for column in accuracy_columns)
 
     metrics: dict[str, Any] = {
         "total_epochs": len(val),
@@ -89,6 +103,22 @@ def _parse_results_csv(csv_path: Path, monitor: str = "mean") -> dict[str, Any]:
     for head in heads:
         metrics[f"{head}_acc"] = _finite_number(best[f"{head}_Acc"])
         metrics[f"final_{head}_acc"] = _finite_number(final[f"{head}_Acc"])
+    if "MacroAcc" in columns:
+        metrics.update({
+            "macro_acc": _finite_number(best["MacroAcc"]),
+            "final_macro_acc": _finite_number(final["MacroAcc"]),
+            "macro_acc_history": [_finite_number(row["MacroAcc"]) for row in val],
+        })
+    if macro_heads:
+        metrics["head_macro_acc_history"] = {
+            head: [_finite_number(row[f"{head}_MacroAcc"]) for row in val]
+            for head in macro_heads
+        }
+        for head in macro_heads:
+            value = _finite_number(best[f"{head}_MacroAcc"])
+            metrics["heads"][head]["macro_acc"] = value
+            metrics[f"{head}_macro_acc"] = value
+            metrics[f"final_{head}_macro_acc"] = _finite_number(final[f"{head}_MacroAcc"])
     return metrics
 
 
@@ -111,7 +141,9 @@ def monitor_node(state: AgentState) -> AgentState:
     table.add_column("Metric", style="cyan")
     table.add_column(f"Best checkpoint (epoch {metrics['best_epoch']})")
     table.add_column(f"Final epoch ({metrics['final_epoch']})")
-    for key in ["mean_acc", *(f"{head}_acc" for head in metrics["heads"])]:
+    display_keys = ["mean_acc", "macro_acc", *(f"{head}_acc" for head in metrics["heads"]),
+                    *(f"{head}_macro_acc" for head in metrics["heads"])]
+    for key in (key for key in display_keys if key in metrics):
         best_value, final_value = metrics.get(key), metrics.get(f"final_{key}")
         table.add_row(key, f"{best_value:.4f}" if best_value is not None else "—", f"{final_value:.4f}" if final_value is not None else "—")
     console.print(table)

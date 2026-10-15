@@ -64,8 +64,67 @@ def _test_counts_error(result: dict[str, Any]) -> str | None:
     return None
 
 
+def _is_macro_metric(metric: str | None, heads: Any = None) -> bool:
+    if not isinstance(metric, str):
+        return False
+    if metric == "macro_acc":
+        return True
+    if heads is not None and not isinstance(heads, (dict, list, tuple, set, frozenset)):
+        heads = ()
+    # A literal head named make_macro still owns make_macro_acc as its
+    # ordinary accuracy. Input validation rejects ambiguous head pairs.
+    if heads is not None and metric.endswith("_acc") and metric[:-4] in heads:
+        return False
+    return metric.endswith("_macro_acc") and (heads is None or metric[:-10] in heads)
+
+
+def _macro_accuracy_error(metrics: dict[str, Any], *, require_class_counts: bool) -> str | None:
+    """Require recorded macro scores; test scores also need a complete class partition."""
+    heads = metrics.get("heads")
+    if not isinstance(heads, dict) or not heads:
+        return "Macro accuracy has no per-head evidence"
+    macros = []
+    for head, evidence in heads.items():
+        if not isinstance(head, str) or not head or not isinstance(evidence, dict):
+            return "Macro accuracy has invalid per-head evidence"
+        macro = _finite_accuracy(evidence.get("macro_acc"))
+        primary = _finite_accuracy(metrics.get(f"{head}_macro_acc"))
+        if macro is None or primary is None or not math.isclose(macro, primary, abs_tol=1e-12):
+            return f"Head '{head}' macro accuracy is missing, invalid, or inconsistent"
+        if require_class_counts:
+            rows = evidence.get("per_class_accuracy")
+            if not isinstance(rows, list) or not rows or evidence.get("omitted_classes", 0) != 0:
+                return f"Test head '{head}' macro accuracy requires complete per-class counts"
+            labels, total, correct, recalls = set(), 0, 0, []
+            for row in rows:
+                if not isinstance(row, dict) or set(row) != {"class", "correct", "total", "accuracy"}:
+                    return f"Test head '{head}' has invalid per-class macro evidence"
+                label = row["class"]
+                if not isinstance(label, str) or not label.strip() or label != label.strip() or label in labels:
+                    return f"Test head '{head}' has invalid or duplicate per-class labels"
+                labels.add(label)
+                class_total, class_correct = row["total"], row["correct"]
+                recall = _finite_accuracy(row["accuracy"])
+                if (type(class_total) is not int or class_total <= 0 or type(class_correct) is not int
+                        or not 0 <= class_correct <= class_total or recall is None
+                        or not math.isclose(recall, class_correct / class_total, abs_tol=1e-12)):
+                    return f"Test head '{head}' has invalid per-class accuracy counts"
+                total += class_total
+                correct += class_correct
+                recalls.append(recall)
+            if total != evidence.get("count") or correct != evidence.get("correct"):
+                return f"Test head '{head}' per-class counts do not cover its full-denominator result"
+            if not math.isclose(macro, sum(recalls) / len(recalls), abs_tol=1e-12):
+                return f"Test head '{head}' macro accuracy does not match its per-class counts"
+        macros.append(macro)
+    mean = _finite_accuracy(metrics.get("macro_acc"))
+    if mean is None or not math.isclose(mean, sum(macros) / len(macros), abs_tol=1e-12):
+        return "Macro accuracy does not match its equally weighted per-head macro accuracies"
+    return None
+
+
 def test_evaluation_error(metrics: dict[str, Any], test_result: dict[str, Any] | None = None,
-                          test_csv: str | None = None) -> str | None:
+                          test_csv: str | None = None, *, target_metric: str | None = None) -> str | None:
     """Explain why a mandatory test result cannot drive a training decision."""
     if (metrics.get("decision_split") != "test" or metrics.get("split") != "test"
             or metrics.get("test_evaluated") is not True):
@@ -91,6 +150,23 @@ def test_evaluation_error(metrics: dict[str, Any], test_result: dict[str, Any] |
     for key in ["mean_acc", *(f"{head}_acc" for head in result["heads"])]:
         if not math.isclose(float(metrics[key]), float(result[key]), abs_tol=1e-12):
             return f"Decision metric '{key}' does not match test inference"
+    if _is_macro_metric(target_metric, metrics["heads"]):
+        for source in (metrics, result):
+            error = _macro_accuracy_error(source, require_class_counts=True)
+            if error:
+                return error
+        for key in ["macro_acc", *(f"{head}_macro_acc" for head in result["heads"])]:
+            if not math.isclose(float(metrics[key]), float(result[key]), abs_tol=1e-12):
+                return f"Decision metric '{key}' does not match test inference"
+        for head in result["heads"]:
+            # Ordering is presentation only; class identities and full counts
+            # must agree between the decision record and raw inference proof.
+            decision_rows = {row["class"]: (row["correct"], row["total"])
+                             for row in metrics["heads"][head]["per_class_accuracy"]}
+            inference_rows = {row["class"]: (row["correct"], row["total"])
+                              for row in result["heads"][head]["per_class_accuracy"]}
+            if decision_rows != inference_rows:
+                return f"Decision per-class counts for head '{head}' do not match test inference"
     source_csv = result.get("test_csv") or test_result.get("test_csv") or test_result.get("csv")
     expected_csv = test_csv or metrics.get("test_csv")
     if expected_csv and (not source_csv or Path(source_csv).resolve() != Path(expected_csv).resolve()):
@@ -107,16 +183,27 @@ def decision_score(metrics: dict[str, Any], training_status: str | None, metric:
         return None
     if metrics.get("nonfinite_loss") or metrics.get("nonfinite_accuracy"):
         return None
-    if split == "test":
-        if test_evaluation_error(metrics, test_result, test_csv):
-            return None
-        if metric != "mean_acc" and (not metric.endswith("_acc") or metric[:-4] not in metrics["heads"]):
-            return None
-    elif metrics.get("decision_split", "val") != "val" or metrics.get("split", "val") != "val":
-        return None
     heads = metrics.get("heads", {})
     if not isinstance(heads, dict) or any(not isinstance(value, dict) for value in heads.values()):
         return None
+    if (metric.endswith("_macro_acc") and metric[:-4] not in heads
+            and metric[:-10] not in heads):
+        return None
+    if split == "test":
+        if test_evaluation_error(metrics, test_result, test_csv, target_metric=metric):
+            return None
+        if metric not in {"mean_acc", "macro_acc"} and not (
+            _is_macro_metric(metric, metrics["heads"])
+            or (metric.endswith("_acc") and metric[:-4] in metrics["heads"])
+        ):
+            return None
+    elif metrics.get("decision_split", "val") != "val" or metrics.get("split", "val") != "val":
+        return None
+    elif _is_macro_metric(metric, metrics.get("heads", {})):
+        if _macro_accuracy_error(metrics, require_class_counts=False):
+            return None
+        if metric != "macro_acc" and metric[:-10] not in metrics["heads"]:
+            return None
     losses = [metrics.get(key) for key in ("train_loss", "val_loss", "best_val_loss")]
     losses.extend(value.get("loss") for value in heads.values())
     losses.extend(metrics.get("train_loss_history", []))

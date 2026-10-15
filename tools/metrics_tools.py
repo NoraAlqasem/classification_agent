@@ -27,7 +27,7 @@ def _dump(value: Any) -> str:
 
 @tool
 def read_results_csv(run_dir: str, monitor: str = "mean") -> str:
-    """Read ResNet training_metrics.csv, selecting the saved epoch by mean or a head name.
+    """Read ResNet training_metrics.csv with monitor mean, macro, a head, or <head>_macro.
 
     All primary accuracies refer to the same checkpoint epoch, not independent
     maxima. Final accuracy and loss fields are diagnostic values.
@@ -80,6 +80,10 @@ def get_final_metrics(run_dir: str) -> str:
               "train_loss": metrics["train_loss"], "val_loss": metrics["val_loss"]}
     for head in metrics["heads"]:
         result[f"{head}_acc"] = metrics[f"final_{head}_acc"]
+        if f"final_{head}_macro_acc" in metrics:
+            result[f"{head}_macro_acc"] = metrics[f"final_{head}_macro_acc"]
+    if "final_macro_acc" in metrics:
+        result["macro_acc"] = metrics["final_macro_acc"]
     return _dump(result)
 
 
@@ -89,13 +93,20 @@ def read_loss_history(run_dir: str) -> str:
     metrics = _read(run_dir)
     if "error" in metrics:
         return _dump(metrics)
-    return _dump({
+    result = {
         "train_loss": metrics["train_loss_history"][-20:],
         "val_loss": metrics["val_loss_history"][-20:],
         "mean_acc": metrics["mean_acc_history"][-20:],
         "head_acc": {head: history[-20:] for head, history in metrics["head_acc_history"].items()},
         "nonfinite_loss": metrics["nonfinite_loss"],
-    })
+    }
+    if "macro_acc_history" in metrics:
+        result["macro_acc"] = metrics["macro_acc_history"][-20:]
+    if "head_macro_acc_history" in metrics:
+        result["head_macro_acc"] = {
+            head: history[-20:] for head, history in metrics["head_macro_acc_history"].items()
+        }
+    return _dump(result)
 
 
 @tool

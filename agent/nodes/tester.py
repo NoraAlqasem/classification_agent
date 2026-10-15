@@ -26,9 +26,14 @@ def test_checkpoint_node(state: AgentState) -> dict:
         # failed test cannot inherit a passing validation target.
         metrics = deepcopy(validation)
         metrics.pop("mean_acc", None)
+        metrics.pop("macro_acc", None)
         metrics.pop("heads", None)
         for head in state.get("heads", validation.get("heads", {})):
             metrics.pop(f"{head}_acc", None)
+            metrics.pop(f"{head}_macro_acc", None)
+        for key in list(metrics):
+            if key.endswith("_macro_acc") and not key.startswith("final_"):
+                metrics.pop(key)
         metrics.update({"status": "test_failed", "error": message,
                         "decision_split": "test", "split": "test",
                         "test_evaluated": False, "full_coverage": False,
@@ -78,12 +83,18 @@ def test_checkpoint_node(state: AgentState) -> dict:
         return failed(failure_message)
 
     metrics = deepcopy(validation)
+    for key in list(metrics):
+        if (key == "macro_acc" or key.endswith("_macro_acc")) and not key.startswith("final_") and key not in result:
+            metrics.pop(key)
     # All primary head accuracies come from this checkpoint's test predictions;
     # losses/history remain validation diagnostics for optimiser reasoning.
     test_heads = {
         head: {**validation.get("heads", {}).get(head, {}), **values}
         for head, values in result["heads"].items()
     }
+    for head, values in result["heads"].items():
+        if "macro_acc" not in values:
+            test_heads[head].pop("macro_acc", None)
     metrics.update(result)
     metrics.update({"heads": test_heads, "validation_metrics": validation,
                     "status": "ok", "decision_split": "test", "split": "test",
@@ -91,7 +102,9 @@ def test_checkpoint_node(state: AgentState) -> dict:
     test_result = {**result, "status": "ok", "checkpoint": result["checkpoint"],
                    "csv": result["test_csv"], "metrics": result,
                    "output_dir": result["output_dir"]}
+    macro_summary = f", macro={result['macro_acc']:.4f}" if result.get("macro_acc") is not None else ""
     console.print(f"[cyan]Test accuracy — attempt {state.get('attempt_number', '?')}: "
-                  f"mean={result['mean_acc']:.4f}, images={result['total_images']}[/cyan]")
+                  f"mean={result['mean_acc']:.4f}{macro_summary}, "
+                  f"images={result['total_images']}[/cyan]")
     return {"metrics": metrics, "validation_metrics": validation,
             "test_result": test_result, "error": ""}

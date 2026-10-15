@@ -2,6 +2,7 @@ import os
 import json
 import time
 import argparse
+import csv
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Iterator
 
@@ -429,13 +430,37 @@ def get_dataloaders(
     return train_loader, val_loader
 
 
-def _new_local_metric_state(heads: List[str]):
+def _new_local_metric_state(
+    heads: List[str],
+    num_classes_by_head: Dict[str, int],
+    device: torch.device = torch.device("cpu"),
+):
     return {
         "total_loss_sum": 0.0,
         "sample_count": 0,
         "head_loss_sum": {head: 0.0 for head in heads},
         "head_correct": {head: 0 for head in heads},
+        "class_correct": {
+            head: torch.zeros(num_classes_by_head[head], dtype=torch.int64, device=device)
+            for head in heads
+        },
+        "class_total": {
+            head: torch.zeros(num_classes_by_head[head], dtype=torch.int64, device=device)
+            for head in heads
+        },
     }
+
+
+def _model_num_classes(model, heads: List[str]) -> Dict[str, int]:
+    module = model.module if isinstance(model, DDP) else model
+    return {head: module.heads[head].out_features for head in heads}
+
+
+def _accumulate_class_counts(state, head: str, targets, predictions) -> None:
+    num_classes = state["class_total"][head].numel()
+    state["class_total"][head] += torch.bincount(targets, minlength=num_classes)
+    correct_targets = targets[predictions == targets]
+    state["class_correct"][head] += torch.bincount(correct_targets, minlength=num_classes)
 
 
 def _reduce_metrics(
@@ -443,8 +468,8 @@ def _reduce_metrics(
     heads: List[str],
     device: torch.device,
 ):
-    # [total_loss_sum, sample_count,
-    #  head1_loss_sum, head1_correct, head2_loss_sum, head2_correct, ...]
+    # Reduce counts before dividing: per-rank class means would bias results
+    # when class frequencies differ across ranks or a rank has no samples.
     values = [
         float(state["total_loss_sum"]),
         float(state["sample_count"]),
@@ -458,7 +483,13 @@ def _reduce_metrics(
             ]
         )
 
-    stats = torch.tensor(values, dtype=torch.float64, device=device)
+    counts = []
+    for head in heads:
+        counts.extend([state["class_correct"][head], state["class_total"][head]])
+    stats = torch.cat([
+        torch.tensor(values, dtype=torch.float64, device=device),
+        *(count.to(device=device, dtype=torch.float64) for count in counts),
+    ])
     dist.all_reduce(stats, op=dist.ReduceOp.SUM)
     reduced = stats.tolist()
 
@@ -473,18 +504,30 @@ def _reduce_metrics(
     }
 
     cursor = 2
+    class_cursor = 2 + 2 * len(heads)
     for head in heads:
         loss_sum = reduced[cursor]
         correct = reduced[cursor + 1]
         cursor += 2
+        num_classes = state["class_total"][head].numel()
+        class_correct = stats[class_cursor:class_cursor + num_classes]
+        class_total = stats[class_cursor + num_classes:class_cursor + 2 * num_classes]
+        class_cursor += 2 * num_classes
+        represented = class_total > 0
+        macro_acc = (class_correct[represented] / class_total[represented]).mean().item()
 
         metrics["heads"][head] = {
             "loss": loss_sum / global_sample_count,
             "acc": correct / global_sample_count,
+            "macro_acc": macro_acc,
         }
+        metrics[f"{head}_macro_acc"] = macro_acc
 
     metrics["mean_acc"] = sum(
         metrics["heads"][head]["acc"] for head in heads
+    ) / len(heads)
+    metrics["macro_acc"] = sum(
+        metrics["heads"][head]["macro_acc"] for head in heads
     ) / len(heads)
 
     return metrics
@@ -504,7 +547,7 @@ def train_one_epoch(
     model.train()
     loader.sampler.set_epoch(epoch)
 
-    state = _new_local_metric_state(heads)
+    state = _new_local_metric_state(heads, _model_num_classes(model, heads), device)
 
     torch.cuda.reset_peak_memory_stats(device)
     torch.cuda.synchronize(device)
@@ -544,6 +587,7 @@ def train_one_epoch(
             state["head_correct"][head] += (
                 preds == targets[head]
             ).sum().item()
+            _accumulate_class_counts(state, head, targets[head], preds)
 
     torch.cuda.synchronize(device)
     local_epoch_time = time.perf_counter() - epoch_start
@@ -585,13 +629,15 @@ def train_one_epoch(
     if rank == 0:
         head_text = " | ".join(
             f"{head}: loss={metrics['heads'][head]['loss']:.4f}, "
-            f"acc={metrics['heads'][head]['acc'] * 100:.2f}%"
+            f"acc={metrics['heads'][head]['acc'] * 100:.2f}%, "
+            f"macro={metrics['heads'][head]['macro_acc'] * 100:.2f}%"
             for head in heads
         )
 
         print(
             f"[Train] Epoch {epoch} | Total Loss: {metrics['total_loss']:.4f} "
-            f"| Mean Acc: {metrics['mean_acc'] * 100:.2f}% | {head_text} "
+            f"| Mean Acc: {metrics['mean_acc'] * 100:.2f}% "
+            f"| Macro Acc: {metrics['macro_acc'] * 100:.2f}% | {head_text} "
             f"| Epoch: {epoch_time:.2f}s | Avg iter: {avg_iter_time:.4f}s "
             f"| Max alloc/GPU: {perf['max_peak_mem_allocated_gb']:.2f} GB "
             f"| Max reserved/GPU: {perf['max_peak_mem_reserved_gb']:.2f} GB"
@@ -619,7 +665,7 @@ def evaluate(
         for buffer in model.module.buffers():
             dist.broadcast(buffer, src=0)
         model = model.module
-    state = _new_local_metric_state(heads)
+    state = _new_local_metric_state(heads, _model_num_classes(model, heads), device)
 
     for images, targets in loader:
         images = images.to(device, non_blocking=True)
@@ -650,19 +696,22 @@ def evaluate(
             state["head_correct"][head] += (
                 preds == targets[head]
             ).sum().item()
+            _accumulate_class_counts(state, head, targets[head], preds)
 
     metrics = _reduce_metrics(state, heads, device)
 
     if rank == 0:
         head_text = " | ".join(
             f"{head}: loss={metrics['heads'][head]['loss']:.4f}, "
-            f"acc={metrics['heads'][head]['acc'] * 100:.2f}%"
+            f"acc={metrics['heads'][head]['acc'] * 100:.2f}%, "
+            f"macro={metrics['heads'][head]['macro_acc'] * 100:.2f}%"
             for head in heads
         )
 
         print(
             f"[Val] Epoch {epoch} | Total Loss: {metrics['total_loss']:.4f} "
-            f"| Mean Acc: {metrics['mean_acc'] * 100:.2f}% | {head_text}"
+            f"| Mean Acc: {metrics['mean_acc'] * 100:.2f}% "
+            f"| Macro Acc: {metrics['macro_acc'] * 100:.2f}% | {head_text}"
         )
 
     return metrics
@@ -674,29 +723,62 @@ def write_metrics_row(
     split: str,
     metrics,
     heads: List[str],
+    columns: Optional[List[str]] = None,
 ):
-    values = [
-        str(epoch),
-        split,
-        str(metrics["total_loss"]),
-        str(metrics["mean_acc"]),
-    ]
+    row = {
+        "Epoch": epoch, "Split": split,
+        "TotalLoss": metrics["total_loss"], "MeanAcc": metrics["mean_acc"],
+        "MacroAcc": metrics["macro_acc"],
+    }
 
     for head in heads:
-        values.extend(
-            [
-                str(metrics["heads"][head]["loss"]),
-                str(metrics["heads"][head]["acc"]),
-            ]
-        )
+        row.update({
+            f"{head}_Loss": metrics["heads"][head]["loss"],
+            f"{head}_Acc": metrics["heads"][head]["acc"],
+            f"{head}_MacroAcc": metrics["heads"][head]["macro_acc"],
+        })
 
-    file_handle.write(",".join(values) + "\n")
+    csv.writer(file_handle).writerow([row[column] for column in (columns or metric_columns(heads))])
     file_handle.flush()
+
+
+def metric_columns(heads: List[str], include_macro: bool = True) -> List[str]:
+    columns = ["Epoch", "Split", "TotalLoss", "MeanAcc"]
+    if include_macro:
+        columns.append("MacroAcc")
+    for head in heads:
+        columns.extend([f"{head}_Loss", f"{head}_Acc"])
+        if include_macro:
+            columns.append(f"{head}_MacroAcc")
+    return columns
+
+
+def resumed_metric_columns(path: str, heads: List[str], monitor: str) -> List[str]:
+    """Keep legacy logs rectangular when a newer trainer resumes a run."""
+    with open(path, newline="", encoding="utf-8") as handle:
+        columns = next(csv.reader(handle), [])
+    missing = sorted(set(metric_columns(heads, include_macro=False)) - set(columns))
+    unknown = sorted(set(columns) - set(metric_columns(heads)))
+    if missing or unknown or len(set(columns)) != len(columns):
+        raise ValueError(f"Invalid metric log header for resume: missing={missing}, unknown={unknown}")
+    if monitor == "macro":
+        score_column = "MacroAcc"
+    elif monitor in heads or monitor == "mean":
+        score_column = "MeanAcc" if monitor == "mean" else f"{monitor}_Acc"
+    else:
+        score_column = f"{monitor[:-6]}_MacroAcc"
+    if score_column not in columns:
+        raise ValueError(f"Checkpoint monitor '{monitor}' requires missing metric column '{score_column}'")
+    return columns
 
 
 def selection_metric(metrics, monitor: str) -> float:
     if monitor == "mean":
         return metrics["mean_acc"]
+    if monitor == "macro":
+        return metrics["macro_acc"]
+    if monitor not in metrics["heads"] and monitor.endswith("_macro"):
+        return metrics["heads"][monitor[:-6]]["macro_acc"]
     return metrics["heads"][monitor]["acc"]
 
 
@@ -725,6 +807,8 @@ def plot_logs(log_path: str, run_dir: str, heads: List[str]):
     plt.subplot(2, 1, 2)
     plt.plot(train_logs["Epoch"], train_logs["MeanAcc"], label="Train Mean Acc")
     plt.plot(val_logs["Epoch"], val_logs["MeanAcc"], label="Val Mean Acc")
+    if "MacroAcc" in logs.columns:
+        plt.plot(val_logs["Epoch"], val_logs["MacroAcc"], label="Val Macro Acc")
 
     for head in heads:
         plt.plot(
@@ -813,7 +897,7 @@ def main():
         "--monitor",
         type=str,
         default="mean",
-        help="Checkpoint/early-stop metric: 'mean' or one of the head names",
+        help="Checkpoint/early-stop metric: 'mean', 'macro', a head name, or '<head>_macro'",
     )
     parser.add_argument(
         "--head-loss-weights",
@@ -845,6 +929,10 @@ def main():
 
     # Preserve CLI order while preventing duplicate heads.
     args.heads = list(dict.fromkeys(args.heads))
+    if {"mean", "macro"} & set(args.heads):
+        parser.error("Head names 'mean' and 'macro' are reserved for aggregate checkpoint monitors")
+    if any(f"{head}_macro" in args.heads for head in args.heads):
+        parser.error("Head names cannot overlap another head's '<head>_macro' monitor")
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for NCCL DDP.")
@@ -858,9 +946,10 @@ def main():
     device = torch.device(f"cuda:{local_rank}")
 
     try:
-        if args.monitor != "mean" and args.monitor not in args.heads:
+        valid_monitors = {"mean", "macro", *args.heads, *(f"{head}_macro" for head in args.heads)}
+        if args.monitor not in valid_monitors:
             raise ValueError(
-                f"--monitor must be 'mean' or one of {args.heads}; got '{args.monitor}'"
+                f"--monitor must be one of {sorted(valid_monitors)}; got '{args.monitor}'"
             )
 
         head_loss_weights = parse_head_loss_weights(
@@ -1055,6 +1144,10 @@ def main():
         perf_file = None
         metrics_path = os.path.join(evaluation_dir, "training_metrics.csv")
         perf_path = os.path.join(evaluation_dir, "performance_metrics.csv")
+        log_columns = (
+            resumed_metric_columns(metrics_path, args.heads, args.monitor)
+            if args.resume else metric_columns(args.heads)
+        )
 
         try:
             if rank == 0:
@@ -1062,10 +1155,7 @@ def main():
                 perf_file = open(perf_path, "a" if args.resume else "w")
 
                 if not args.resume:
-                    metric_columns = ["Epoch", "Split", "TotalLoss", "MeanAcc"]
-                    for head in args.heads:
-                        metric_columns.extend([f"{head}_Loss", f"{head}_Acc"])
-                    metrics_file.write(",".join(metric_columns) + "\n")
+                    csv.writer(metrics_file).writerow(log_columns)
 
                     perf_file.write(
                         "Epoch,IterationsPerGPU,EpochTimeSec,AvgIterTimeSec,"
@@ -1104,10 +1194,10 @@ def main():
 
                 if rank == 0:
                     write_metrics_row(
-                        metrics_file, epoch, "train", train_metrics, args.heads
+                        metrics_file, epoch, "train", train_metrics, args.heads, log_columns
                     )
                     write_metrics_row(
-                        metrics_file, epoch, "val", val_metrics, args.heads
+                        metrics_file, epoch, "val", val_metrics, args.heads, log_columns
                     )
 
                     perf_file.write(

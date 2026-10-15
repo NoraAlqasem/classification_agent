@@ -23,6 +23,9 @@ in test mode they measure full-denominator checkpoint inference. Validation
 scores, final-epoch scores and loss histories are diagnostics only. Compare the
 exact requested target metric. Low accuracy alone is not divergence; diverged
 requires nonfinite losses. A final drop may indicate overfitting.
+macro_acc averages class accuracies equally within each head, then averages
+heads equally. HEAD_macro_acc is that head's macro accuracy. Classes with no
+samples in the evaluated split are excluded; do not substitute overall accuracy.
 Per-head per_class_accuracy tables contain class, correct, total and accuracy.
 Use counts to judge class weaknesses and unequal test support. These are test
 diagnostics, not replacements for the exact target metric. If omitted_classes
@@ -78,13 +81,15 @@ def target_is_reached(metrics: dict[str, Any], training_result: dict[str, Any], 
 
 def _fallback_evaluation(metrics: dict[str, Any], training_result: dict[str, Any],
                          decision_split: str = "val", test_result: dict[str, Any] | None = None,
-                         test_csv: str | None = None) -> dict[str, Any]:
+                         test_csv: str | None = None, target_metric: str | None = None) -> dict[str, Any]:
     verdict, issues, recommendations = "good", [], []
     if training_result.get("status") != "success":
         verdict = "training_failed"
         issues = [metrics.get("error") or training_result.get("error") or "Training metrics are unavailable"]
         recommendations = ["Inspect training.log and check dataset paths and supported configuration values"]
-    elif decision_split == "test" and (error := test_evaluation_error(metrics, test_result, test_csv)):
+    elif decision_split == "test" and (error := test_evaluation_error(
+        metrics, test_result, test_csv, target_metric=target_metric,
+    )):
         verdict, issues = "test_failed", [error]
         recommendations = ["Fix the test CSV, image paths, labels or inference error before another training attempt"]
     elif metrics.get("status") != "ok":
@@ -110,9 +115,9 @@ def _fallback_evaluation(metrics: dict[str, Any], training_result: dict[str, Any
 
 def _adjust_verdict(evaluation_result: dict[str, Any], metrics: dict[str, Any], training_result: dict[str, Any],
                     decision_split: str = "val", test_result: dict[str, Any] | None = None,
-                    test_csv: str | None = None) -> dict[str, Any]:
+                    test_csv: str | None = None, target_metric: str | None = None) -> dict[str, Any]:
     """Keep failure and divergence diagnoses tied to recorded evidence."""
-    fallback = _fallback_evaluation(metrics, training_result, decision_split, test_result, test_csv)
+    fallback = _fallback_evaluation(metrics, training_result, decision_split, test_result, test_csv, target_metric)
     if fallback["verdict"] in {"training_failed", "test_failed", "diverged"}:
         evaluation_result.update(fallback)
     elif evaluation_result.get("verdict") == "diverged":
@@ -134,7 +139,7 @@ def evaluator_node(state: AgentState) -> AgentState:
     decision_split = state.get("decision_split", "val")
     test_result = state.get("test_result", {})
     test_csv = state.get("test_csv") or state.get("current_config", {}).get("test_csv")
-    evaluation = _fallback_evaluation(metrics, training_result, decision_split, test_result, test_csv)
+    evaluation = _fallback_evaluation(metrics, training_result, decision_split, test_result, test_csv, target_metric)
     messages: list[Any] = []
     if (training_result.get("status") == "success" and metrics.get("status") == "ok"
             and evaluation["verdict"] != "test_failed"):
@@ -165,7 +170,7 @@ def evaluator_node(state: AgentState) -> AgentState:
                 style="yellow", markup=False, highlight=False,
             )
 
-    evaluation = _adjust_verdict(evaluation, metrics, training_result, decision_split, test_result, test_csv)
+    evaluation = _adjust_verdict(evaluation, metrics, training_result, decision_split, test_result, test_csv, target_metric)
     evaluation["target_reached"] = target_is_reached(metrics, training_result, target_metric, target_value,
                                                     decision_split, test_result, test_csv)
     evaluation["decision_split"] = decision_split
@@ -179,7 +184,9 @@ def evaluator_node(state: AgentState) -> AgentState:
         recommendations = [str(recommendations)]
     evaluation["recommendations"] = [str(value) for value in recommendations]
     if evaluation.get("verdict") not in {"good", "overfitting", "underfitting", "diverged", "plateau", "training_failed", "test_failed"}:
-        evaluation["verdict"] = _fallback_evaluation(metrics, training_result, decision_split, test_result, test_csv)["verdict"]
+        evaluation["verdict"] = _fallback_evaluation(
+            metrics, training_result, decision_split, test_result, test_csv, target_metric,
+        )["verdict"]
     if target_metric not in metrics and metrics.get("status") == "ok":
         evaluation["issues"].append(f"Requested target metric '{target_metric}' is absent")
     console.print(f"[bold]Verdict:[/bold] {evaluation.get('verdict', 'unknown')}")

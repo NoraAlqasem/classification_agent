@@ -15,6 +15,8 @@ _TRAINING_FIELDS = {
     "best_val_loss": ("loss", "best_val"),
     "train_loss_history": ("history", "train_loss"), "val_loss_history": ("history", "val_loss"),
     "mean_acc_history": ("history", "mean_accuracy"), "head_acc_history": ("history", "head_accuracy"),
+    "macro_acc_history": ("history", "macro_accuracy"),
+    "head_macro_acc_history": ("history", "head_macro_accuracy"),
     "nonfinite_loss": ("nonfinite_loss",), "nonfinite_accuracy": ("nonfinite_accuracy",),
 }
 _CONFIG_FIELDS = {
@@ -88,13 +90,21 @@ def _apply_changes(base: dict, changes: dict) -> dict:
 
 def _encode_split(metrics: dict, *, test: bool = False) -> dict:
     result = {}
+    head_names = metrics.get("heads", {})
+    head_names = head_names if isinstance(head_names, dict) else {}
     for key, value in metrics.items():
         if key in _TRAINING_FIELDS or key.startswith("final_") or key == "validation_metrics":
             continue
         if key == "mean_acc":
             result["mean_accuracy"] = deepcopy(value)
+        elif key == "macro_acc":
+            result["macro_accuracy"] = deepcopy(value)
         elif key == "heads" and isinstance(value, dict):
             result["heads"] = {head: _encode_head(evidence, test=test) for head, evidence in value.items()}
+        elif key.endswith("_acc") and key[:-4] in head_names:
+            result.setdefault("primary_accuracy", {})[key[:-4]] = deepcopy(value)
+        elif key.endswith("_macro_acc"):
+            result.setdefault("primary_macro_accuracy", {})[key[:-10]] = deepcopy(value)
         elif key.endswith("_acc"):
             result.setdefault("primary_accuracy", {})[key[:-4]] = deepcopy(value)
         else:
@@ -102,6 +112,7 @@ def _encode_split(metrics: dict, *, test: bool = False) -> dict:
     # An explicit empty map preserves a missing requested metric: head evidence
     # alone must never fabricate the primary accuracy used by score guards.
     result.setdefault("primary_accuracy", {})
+    result.setdefault("primary_macro_accuracy", {})
     return result
 
 
@@ -111,7 +122,8 @@ def _encode_head(evidence: Any, *, test: bool) -> Any:
     result = {}
     if "acc" in evidence:
         result["accuracy"] = deepcopy(evidence["acc"])
-    result.update({("validation_loss" if field == "loss" and test else field): deepcopy(item)
+    result.update({("macro_accuracy" if field == "macro_acc" else
+                    "validation_loss" if field == "loss" and test else field): deepcopy(item)
                    for field, item in evidence.items() if field not in {"acc", "accuracy"}})
     if "accuracy" in evidence:
         result["accuracy_alias"] = True
@@ -123,7 +135,8 @@ def _encode_head(evidence: Any, *, test: bool) -> Any:
 def _decode_head(evidence: Any) -> Any:
     if not isinstance(evidence, dict):
         return deepcopy(evidence)
-    result = {("acc" if field == "accuracy" else "loss" if field == "validation_loss" else field): deepcopy(item)
+    result = {("acc" if field == "accuracy" else "macro_acc" if field == "macro_accuracy" else
+               "loss" if field == "validation_loss" else field): deepcopy(item)
               for field, item in evidence.items() if field not in {"accuracy_alias", "reported_accuracy"}}
     if evidence.get("accuracy_alias"):
         result["accuracy"] = deepcopy(evidence["reported_accuracy"] if "reported_accuracy" in evidence else evidence.get("accuracy"))
@@ -133,10 +146,12 @@ def _decode_head(evidence: Any) -> Any:
 def _decode_split(section: dict) -> dict:
     result = {}
     for key, value in section.items():
-        if key in {"primary_accuracy", "is_snapshot", "training_overrides", "inference_overrides", "inference_available"}:
+        if key in {"primary_accuracy", "primary_macro_accuracy", "is_snapshot", "training_overrides", "inference_overrides", "inference_available"}:
             continue
         if key == "mean_accuracy":
             result["mean_acc"] = deepcopy(value)
+        elif key == "macro_accuracy":
+            result["macro_acc"] = deepcopy(value)
         elif key == "heads" and isinstance(value, dict):
             result["heads"] = {head: _decode_head(evidence) for head, evidence in value.items()}
         else:
@@ -147,6 +162,12 @@ def _decode_split(section: dict) -> dict:
                   if isinstance(value, dict) and "accuracy" in value}
     for head, value in scores.items():
         result[f"{head}_acc"] = deepcopy(value)
+    macro_scores = section.get("primary_macro_accuracy")
+    if macro_scores is None:
+        macro_scores = {head: value["macro_accuracy"] for head, value in section.get("heads", {}).items()
+                        if isinstance(value, dict) and "macro_accuracy" in value}
+    for head, value in macro_scores.items():
+        result[f"{head}_macro_acc"] = deepcopy(value)
     return result
 
 
@@ -196,10 +217,19 @@ def serialize_internal_experiment(experiment: dict[str, Any], *, session_id: int
     if _nonfinite_losses(metrics) or _nonfinite_losses(snapshot or {}):
         common["nonfinite_loss"] = True
     training = _mapped(common, _TRAINING_FIELDS)
+    head_names = set(config.get("heads") or experiment.get("heads") or metrics.get("heads", {}))
+    macro_final_keys = {key for key in common if key == "final_macro_acc"
+                        or (key.startswith("final_") and key.endswith("_macro_acc")
+                            and key[6:-4] not in head_names)}
     training["final_accuracy"] = {key[6:-4] if key.endswith("_acc") else key[6:]: value
-                                  for key, value in common.items() if key.startswith("final_") and key != "final_epoch"}
+                                  for key, value in common.items() if key.startswith("final_")
+                                  and key != "final_epoch" and key not in macro_final_keys}
     if not training["final_accuracy"]:
         training.pop("final_accuracy")
+    final_macro = {("mean" if key == "final_macro_acc" else key[6:-10]): value
+                   for key, value in common.items() if key in macro_final_keys}
+    if final_macro:
+        training["final_macro_accuracy"] = final_macro
     validation_source = snapshot if snapshot is not None else (metrics if split == "val" else {})
     validation = _encode_split(validation_source)
     validation["is_snapshot"] = snapshot is not None
@@ -208,8 +238,8 @@ def serialize_internal_experiment(experiment: dict[str, Any], *, session_id: int
         if differences:
             validation["training_overrides"] = differences
     test = _encode_split(metrics, test=True) if split == "test" else {}
-    for section, preferred in ((validation, ("mean_accuracy", "heads")),
-                               (test, ("mean_accuracy", "total_images", "heads"))):
+    for section, preferred in ((validation, ("mean_accuracy", "macro_accuracy", "heads")),
+                               (test, ("mean_accuracy", "macro_accuracy", "total_images", "heads"))):
         reordered = {**{key: section[key] for key in preferred if key in section},
                      **{key: value for key, value in section.items() if key not in preferred}}
         section.clear()
@@ -286,7 +316,9 @@ def serialize_experiment(experiment: dict[str, Any], *, session_id: int | None =
 
     def heads(source: dict, *, include_loss: bool) -> dict:
         names = ("accuracy", "loss") if include_loss else ("accuracy",)
-        return {head: fields(evidence, names) for head, evidence in source.get("heads", {}).items()
+        return {head: {**fields(evidence, names),
+                       **({"macro_accuracy": deepcopy(evidence["macro_accuracy"])} if "macro_accuracy" in evidence else {})}
+                for head, evidence in source.get("heads", {}).items()
                 if isinstance(evidence, dict)}
 
     return {
@@ -302,11 +334,15 @@ def serialize_experiment(experiment: dict[str, Any], *, session_id: int | None =
         "training": {
             **fields(training, ("epochs_completed", "best_epoch")),
             "loss": fields(training.get("loss", {}), ("train_final", "val_final", "best_val")),
-            "history": fields(training.get("history", {}), ("train_loss", "val_loss", "mean_accuracy", "head_accuracy")),
+            "history": {**fields(training.get("history", {}), ("train_loss", "val_loss", "mean_accuracy", "head_accuracy")),
+                        **{key: deepcopy(value) for key, value in training.get("history", {}).items()
+                           if key in {"macro_accuracy", "head_macro_accuracy"}}},
         },
         "validation": {"mean_accuracy": deepcopy(validation.get("mean_accuracy")),
+                       **({"macro_accuracy": deepcopy(validation["macro_accuracy"])} if "macro_accuracy" in validation else {}),
                        "heads": heads(validation, include_loss=True)},
         "test": {"mean_accuracy": deepcopy(test.get("mean_accuracy")),
+                 **({"macro_accuracy": deepcopy(test["macro_accuracy"])} if "macro_accuracy" in test else {}),
                  "total_images": deepcopy(test.get("total_images")), "heads": heads(test, include_loss=False)},
         "evaluation": fields(evaluation, ("verdict", "target_reached", "issues", "recommendations", "reasoning")),
         "artifacts": fields(artifacts, ("run_dir", "best_weights", "last_weights")),
@@ -352,6 +388,8 @@ def deserialize_experiment(document: dict[str, Any]) -> dict[str, Any]:
     common = _unmapped(training, _TRAINING_FIELDS)
     for head, value in training.get("final_accuracy", {}).items():
         common[f"final_{head}_acc"] = deepcopy(value)
+    for head, value in training.get("final_macro_accuracy", {}).items():
+        common["final_macro_acc" if head == "mean" else f"final_{head}_macro_acc"] = deepcopy(value)
     validation, test = document.get("validation", {}), document.get("test", {})
     metrics = {**common, **_decode_split(test if split == "test" else validation)}
     if validation.get("is_snapshot"):

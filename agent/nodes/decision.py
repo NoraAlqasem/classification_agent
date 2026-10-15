@@ -31,7 +31,7 @@ def decision_node(state: AgentState) -> AgentState:
     target = state.get("target_value", 0.85)
     decision_split = state.get("decision_split", "val")
     test_csv = state.get("test_csv") or state.get("current_config", {}).get("test_csv")
-    test_error = (test_evaluation_error(metrics, state.get("test_result"), test_csv)
+    test_error = (test_evaluation_error(metrics, state.get("test_result"), test_csv, target_metric=metric)
                   if decision_split == "test" else None)
     reached = target_is_reached(metrics, training_result, metric, target,
                                 decision_split, state.get("test_result"), test_csv)

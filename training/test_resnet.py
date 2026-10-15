@@ -51,6 +51,19 @@ class MultiHeadResNet(nn.Module):
         return {head: layer(features) for head, layer in self.heads.items()}
 
 
+def _validate_head_metric_names(heads):
+    """Keep ordinary, per-head macro, and aggregate accuracy keys distinct."""
+    if not isinstance(heads, (list, tuple)) or not heads or any(not isinstance(head, str) or not head for head in heads):
+        raise ValueError("Evaluation heads must be a nonempty list of names")
+    if len(set(heads)) != len(heads):
+        raise ValueError("Evaluation heads must not contain duplicates")
+    names = set(heads)
+    collisions = names & {"mean", "macro"}
+    collisions.update(head for head in names if f"{head}_macro" in names)
+    if collisions:
+        raise ValueError(f"Head names collide with accuracy metric keys: {', '.join(sorted(collisions))}")
+
+
 def _validated_checkpoint(path):
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(checkpoint, dict):
@@ -69,6 +82,7 @@ def _validated_checkpoint(path):
         raise ValueError("Checkpoint has invalid or reserved head names")
     if len(set(heads)) != len(heads):
         raise ValueError("Checkpoint heads contain duplicates")
+    _validate_head_metric_names(heads)
     if not isinstance(classes, dict) or set(classes) != set(heads):
         raise ValueError("Checkpoint class lists must match its heads exactly")
     for head in heads:
@@ -321,11 +335,13 @@ def evaluate_head(results, head, labels, threshold, output_dir):
         save_confusion_matrix_png(cm, all_labels, out / "confusion_matrix_counts.png")
         save_confusion_matrix_png(cm, all_labels, out / "confusion_matrix_normalized.png", normalize=True)
     accuracy = correct / count if count else None
+    macro_acc = sum(item["accuracy"] for item in class_accuracy) / len(class_accuracy) if class_accuracy else None
     print(f"{head}: {correct}/{count} correct; below threshold={len(results) - count}")
     return {"head": head, "matched": len(results), "evaluated": count,
             "total": len(results), "count": count, "coverage": count / len(results),
             "skipped_by_threshold": len(results) - count, "correct": correct,
-            "accuracy": accuracy, "acc": accuracy, "per_class_accuracy": class_accuracy}
+            "accuracy": accuracy, "acc": accuracy, "macro_acc": macro_acc,
+            "per_class_accuracy": class_accuracy}
 
 
 def _check_labels(df, heads, classes_by_head):
@@ -336,6 +352,7 @@ def _check_labels(df, heads, classes_by_head):
 
 
 def _save_evaluation(results, heads, classes_by_head, output_dir, threshold=0.0):
+    _validate_head_metric_names(heads)
     output_dir.mkdir(parents=True, exist_ok=True)
     results.to_csv(output_dir / "inference_results.csv", index=False, encoding="utf-8-sig")
     summaries = [evaluate_head(results, head, classes_by_head[head] if classes_by_head else None,
@@ -345,13 +362,17 @@ def _save_evaluation(results, heads, classes_by_head, output_dir, threshold=0.0)
     full_coverage = all(summary["count"] == len(results) for summary in summaries)
     scores = [summary["acc"] for summary in summaries]
     mean_acc = sum(scores) / len(scores) if all(score is not None for score in scores) else None
+    macro_scores = [summary["macro_acc"] for summary in summaries]
+    macro_acc = sum(macro_scores) / len(macro_scores) if all(score is not None for score in macro_scores) else None
     metrics = {"status": "ok" if full_coverage else "partial_coverage", "mean_acc": mean_acc,
+               "macro_acc": macro_acc,
                "heads": {head: summary for head, summary in zip(heads, summaries)},
                "total_images": len(results), "matched_images": len(results),
                "evaluated_images": min(summary["count"] for summary in summaries),
                "full_coverage": full_coverage, "threshold": threshold,
                "output_dir": str(output_dir.resolve())}
     metrics.update({f"{head}_acc": summary["acc"] for head, summary in zip(heads, summaries)})
+    metrics.update({f"{head}_macro_acc": summary["macro_acc"] for head, summary in zip(heads, summaries)})
     return metrics
 
 
@@ -361,8 +382,9 @@ def evaluate_checkpoint(checkpoint_path: str, csv_path: str, output_dir: str, *,
                         device: str | None = None) -> dict[str, Any]:
     """Infer on all test rows at threshold zero; fail instead of dropping rows.
 
-    Every checkpoint head participates in mean_acc. The agent's expected heads
-    must match the checkpoint exactly, preventing a subset from changing the
+    Every checkpoint head participates equally in mean_acc and macro_acc. Each
+    head's macro accuracy equally weights classes with samples in this split.
+    The agent's expected heads must match the checkpoint exactly, preventing a subset from changing the
     stopping metric or silently accepting an unrelated checkpoint.
     """
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
@@ -428,8 +450,7 @@ def main():
         if args.arch and args.arch != checkpoint["arch"]:
             raise ValueError("--arch differs from checkpoint architecture")
     heads = args.heads or checkpoint["heads"]
-    if len(set(heads)) != len(heads):
-        raise ValueError("--heads must not contain duplicates")
+    _validate_head_metric_names(heads)
     if checkpoint and set(heads) - set(checkpoint["heads"]):
         raise ValueError("Requested heads are absent from checkpoint")
     gt_df = read_ground_truth(args.gt_csv, heads,
