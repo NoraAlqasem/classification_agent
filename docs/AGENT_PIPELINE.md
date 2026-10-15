@@ -9,6 +9,7 @@
   - [3. Configuration and precedence](#3-configuration-and-precedence)
     - [3.1 Current YAML defaults](#31-current-yaml-defaults)
     - [3.2 Hosted LLM configuration](#32-hosted-llm-configuration)
+    - [3.3 Accuracy targets and checkpoint monitoring](#33-accuracy-targets-and-checkpoint-monitoring)
   - [4. Pipeline stages](#4-pipeline-stages)
   - [5. What the LLM sees and can change](#5-what-the-llm-sees-and-can-change)
     - [5.1 LLM stages](#51-llm-stages)
@@ -36,13 +37,13 @@ The workflow separates experiment management from the underlying classifier arch
 | Session | One agent invocation containing its sequence of experiments. |
 | Checkpoint | A saved PyTorch model and its metadata. |
 | Decision split | The split whose measured accuracy controls the target gate and best-experiment selection: `test` or `val`. |
-| Target metric | `mean_acc` or one requested head's accuracy, such as `make_acc`. |
+| Target metric | Overall `mean_acc`, class-balanced `macro_acc`, or one requested head's `HEAD_acc` / `HEAD_macro_acc`, such as `make_macro_acc`. |
 | LLM retry | Another API request for the same analysis after a temporary rate limit; it does not create an experiment. |
 | Optimization correction | Another proposal requested with the exact error from invalid optimizer output; it does not create an experiment. |
 
 ## 2. Workflow
 
-![Agent workflow showing dataset validation, training and evaluation, optimization with up to two correction requests, checkpoint export, and reporting.](assets/agent-workflow.svg)
+![Agent workflow showing dataset validation, training and evaluation, optimization with up to two correction requests, checkpoint export, and session summary finalization.](assets/agent-workflow.svg)
 
 ## 3. Configuration and precedence
 
@@ -51,7 +52,7 @@ The workflow separates experiment management from the underlying classifier arch
 | Setting | Meaning |
 |---|---|
 | `decision_split` | `test` or `val`; controls the experiment score used for decisions. |
-| `target_metric` | Mean head accuracy or a requested head's accuracy. |
+| `target_metric` | `mean_acc`, `macro_acc`, `HEAD_acc`, or `HEAD_macro_acc` for a requested head. |
 | `target_value` | Accuracy fraction in `[0, 1]`; `0.99` means 99%. |
 | `max_attempts` | Maximum total training experiments in one session. |
 | `export_format` | `onnx` or `none`. |
@@ -66,7 +67,7 @@ The workflow separates experiment management from the underlying classifier arch
 
 ### 3.2 Hosted LLM configuration
 
-Copy [`.env.example`](../.env.example) to `.env` and set your API key. The template matches the client defaults:
+Copy [`.env.example`](../.env.example) to `.env` and set your API key. The template configures the client and optimization controls:
 
 ```ini
 OPENAI_API_KEY=replace_with_your_api_key
@@ -76,6 +77,7 @@ LLM_MAX_TOKENS=512
 LLM_TIMEOUT_SECONDS=30
 LLM_MAX_RETRIES=2
 LLM_RATE_LIMIT_MAX_WAIT_SECONDS=60
+LLM_ALLOWED_CONFIG_KEYS=all
 LLM_OPTIMIZATION_MAX_HYPERPARAMETERS=1
 LLM_CONTEXT_HISTORY_ENTRIES=5
 LLM_CONTEXT_RECENT_EXPERIMENTS=3
@@ -91,17 +93,29 @@ LLM_CONTEXT_MAX_CLASSES_PER_HEAD=50
 | `LLM_TIMEOUT_SECONDS` | `30` | Positive finite timeout configured on the client. |
 | `LLM_MAX_RETRIES` | `2` | Additional requests allowed after transient HTTP 429 errors; zero disables them. |
 | `LLM_RATE_LIMIT_MAX_WAIT_SECONDS` | `60` | Positive finite cumulative planned sleep budget for one LLM invocation. |
-| `LLM_OPTIMIZATION_MAX_HYPERPARAMETERS` | `1` | Positive integer: maximum supported hyperparameter keys whose values can change in one optimizer proposal. |
+| `LLM_ALLOWED_CONFIG_KEYS` | `all` | Comma- or space-separated supported training keys that the LLM may change. |
+| `LLM_OPTIMIZATION_MAX_HYPERPARAMETERS` | `1` | Positive integer: maximum permitted hyperparameter keys whose values can change in one optimizer proposal.|
 | `LLM_CONTEXT_HISTORY_ENTRIES` | `5` | Positive integer: most recent entries retained from each loss or accuracy history. |
-| `LLM_CONTEXT_RECENT_EXPERIMENTS` | `3` | Positive integer: most recent current-session experiments retained, plus an older best verified experiment when needed. |
+| `LLM_CONTEXT_RECENT_EXPERIMENTS` | `3` | Positive integer: recent current-session experiments retained in detailed compact form, plus an older best verified experiment when needed. Every earlier experiment also appears in a separate summary. |
 | `LLM_CONTEXT_MAX_ITEMS` | `3` | Positive integer: maximum items in each historical issues or recommendations list. |
 | `LLM_CONTEXT_MAX_CLASSES_PER_HEAD` | `50` | Positive integer: maximum tested class results retained per head, prioritizing lowest accuracy. |
+
+### 3.3 Accuracy targets and checkpoint monitoring
+
+Overall head accuracy counts every image equally. A head's macro accuracy counts every class represented in the evaluated split equally:
+
+```text
+HEAD_acc       = total correct predictions / total images
+HEAD_macro_acc = mean(correct / total for each class with total > 0)
+mean_acc       = mean(HEAD_acc across the requested heads)
+macro_acc      = mean(HEAD_macro_acc across the requested heads)
+```
 
 ## 4. Pipeline stages
 
 | Stage | Input and work | Main state/output updates |
 |---|---|---|
-| `user_input` | Resolve CLI, environment, YAML defaults, aliases, and optional prompts. | Split paths, heads, model selection, target, limit, loss inputs, input errors. |
+| `user_input` | Resolve CLI, environment, YAML defaults, aliases, and optional prompts. | Split paths, heads, model selection, target, limits, allowed LLM changes, loss inputs, input errors. |
 | `dataset_validator` | Check inputs, CSVs, image paths, labels, and class mappings. | `validation_report`, normalized paths, `is_valid`. |
 | `config_generator` | Build first configuration from YAML plus resolved inputs; allocate the session. | `current_config`, `session_dir`, initial config history and Markdown summary. |
 | `trainer` | Validate full configuration and CUDA/NCCL availability; launch torchrun. | Incremented `attempt_number`, `training_result`, run folder, checkpoints. |
@@ -110,9 +124,9 @@ LLM_CONTEXT_MAX_CLASSES_PER_HEAD=50
 | `evaluator` | Ask LLM for diagnosis when usable results exist; apply deterministic corrections and target checks. | `evaluation_result`, issues, `target_reached`. |
 | `memory` | Save experiment, verified score, completed comparisons, and session overview. | Experiment history, `best_experiment`, knowledge base, experiment JSON. |
 | `decision` | Evaluate required test evidence, target, attempt limit, and instability. | `stop_reason`, confirmed target result. |
-| `config_optimizer` | Request and validate a proposal; request up to two corrections with exact errors for invalid output. | Accepted next configuration and rationale, or terminal optimization error. |
+| `config_optimizer` | Request and validate a permitted proposal; request up to two corrections with exact errors for invalid output. | Accepted next configuration and rationale, terminal optimization error, or `disabled` status with `no_allowed_changes`. |
 | `onnx_exporter` | Export the session's eligible best checkpoint when requested. | ONNX path and metadata, or an export error. |
-| `reporter` | Build factual reports and optionally append an LLM narrative. | Markdown report, report JSON, updated session summary. |
+| `reporter` | Finalize the deterministic session summary from recorded results, stop reason, errors, and artifacts. | Updated `session_summary.md` and `session_summary_path`. |
 
 ## 5. What the LLM sees and can change
 
@@ -121,16 +135,16 @@ LLM_CONTEXT_MAX_CLASSES_PER_HEAD=50
 | LLM use | Receives | Returns |
 |---|---|---|
 | Evaluation | Current measured metrics, configuration, decision split, target, and validation diagnostics. | Verdict, target proposal, issues, recommendations, reasoning. |
-| Optimization | Current configuration/results, evaluation, compatible pretrained model catalog, compact current-session experiment history, `current_class_alpha`, and training `classes_by_head`; correction requests also include rejected output and its exact validation error. | `updated_config` and a brief `rationale`. |
-| Final narrative | Session facts, best result/configuration, comparison rows, artifact paths, and errors. | Optional Markdown analysis appended to the factual report. |
+| Optimization | Current configuration/results, evaluation, allowed configuration keys, available local architectures, recent compact `experiment_history`, `older_experiments_summary` covering every earlier experiment, `current_class_alpha`, and training `classes_by_head`; correction requests also include rejected output and its exact validation error. | `updated_config` and a brief `rationale`. |
 
 ### 5.2 Prompt compaction
 
 [agent/llm_context.py](../agent/llm_context.py) keeps:
 
 - Scalar metric values, measured scores, and relevant status/count evidence.
+- Global and per-head macro accuracies, including their compact histories when available.
 - The last `LLM_CONTEXT_HISTORY_ENTRIES` entries of loss and accuracy histories (default 5), with their original lengths.
-- The last `LLM_CONTEXT_RECENT_EXPERIMENTS` current-session experiments (default 3), plus an older best verified experiment when needed.
+- The last `LLM_CONTEXT_RECENT_EXPERIMENTS` current-session experiments (default 3) in detailed compact form, plus an older best verified experiment when needed.
 - Up to `LLM_CONTEXT_MAX_ITEMS` items in each issues or recommendations list per summarized historical experiment (default 3). Each item retains its existing 240-character cap.
 - Up to `LLM_CONTEXT_MAX_CLASSES_PER_HEAD` tested classes per head (default 50), selected by lowest accuracy when more classes are present.
 
@@ -143,7 +157,11 @@ LLM_CONTEXT_MAX_CLASSES_PER_HEAD=100
 
 ### 5.3 Allowed changes
 
-The optimizer can change up to `LLM_OPTIMIZATION_MAX_HYPERPARAMETERS` hyperparameter keys in one proposal (default **1**). Only supported keys whose values differ from the original `current_config` count toward this limit; supplied keys with unchanged values do not count. The supported keys are:
+Set `LLM_ALLOWED_CONFIG_KEYS` to choose the fields the LLM may change after the baseline. Keys can be separated by commas or spaces. Unlisted keys cannot be changed directly by the LLM. The default `all` allows every supported key.
+
+```ini
+LLM_ALLOWED_CONFIG_KEYS=lr,weight_decay,gamma,alpha_json
+```
 
 | Key | Validation / meaning |
 |---|---|
@@ -156,6 +174,7 @@ The optimizer can change up to `LLM_OPTIMIZATION_MAX_HYPERPARAMETERS` hyperparam
 | `patience` | Integer at least 1. |
 | `head_loss_weights` | Requested heads only, finite nonnegative values, at least one positive value. |
 | `alpha_json` | Per-class focal-loss alpha updates as a nested object, an existing valid alpha JSON path, or `null` to disable class weighting. Counts as one changed hyperparameter key. |
+| `arch` | Supported architecture with compatible local pretrained weights.|
 
 ## 6. Stopping rules and limits
 
@@ -248,11 +267,11 @@ python -m torch.distributed.run --standalone --nproc_per_node 1 \
 | [agent/nodes/config_optimizer.py](../agent/nodes/config_optimizer.py) | LLM proposal validation, bounded correction requests, and model selection. |
 | [agent/nodes/memory_node.py](../agent/nodes/memory_node.py) | Saving experiments, completed lessons, and current-session best result. |
 | [agent/nodes/onnx_exporter.py](../agent/nodes/onnx_exporter.py) | Eligible best-checkpoint export. |
-| [agent/nodes/reporter.py](../agent/nodes/reporter.py) | Factual final report and optional narrative. |
+| [agent/nodes/reporter.py](../agent/nodes/reporter.py) | Deterministic final session summary, status, errors, and artifact references. |
 | [agent/llm.py](../agent/llm.py) | Hosted client construction and JSON parsing. |
 | [agent/llm_retry.py](../agent/llm_retry.py) | Bounded transient-rate-limit recovery. |
 | [agent/llm_context.py](../agent/llm_context.py) | Compact metrics, per-class tables, and experiment history. |
-| [agent/llm_logging.py](../agent/llm_logging.py) | Atomic per-session LLM response writes. |
+| [agent/llm_logging.py](../agent/llm_logging.py) | Atomic per-session evaluation and optimization response writes. |
 | [agent/session_log_format.py](../agent/session_log_format.py) | Strict LLM JSON projection. |
 | [agent/session_summary.py](../agent/session_summary.py) | Deterministic Markdown comparison and best results. |
 | [memory/experiment_format.py](../memory/experiment_format.py) | Public summary serialization and internal record normalization. |

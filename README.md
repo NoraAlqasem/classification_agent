@@ -23,7 +23,7 @@ The workflow is not tied to a specific architecture. ResNet is one supported exa
 - Best-model selection
 - Best and last checkpoint saving
 - Optional ONNX export
-- Session-level experiment summaries
+- Deterministic session summaries in `session_summary.md`
 
 ---
 
@@ -73,21 +73,19 @@ If your system uses a different CUDA runtime, update the PyTorch/Torchvision ins
 
 ## Configuration
 
-Create your environment file:
+### 1. Environment Setup
+
+Create a `.env` file from the provided example:
 
 ```bash
 cp .env.example .env
 ```
 
-Configure your:
+Configure the API key, dataset paths, data root, classification heads, and model settings.
 
-- API key
-- dataset paths
-- data root
-- classification heads
-- model settings
+### 2. Environment Variables
 
-Example:
+Example configuration:
 
 ```env
 OPENAI_API_KEY=...
@@ -101,11 +99,25 @@ DATA_ROOT=...
 HEADS="make vehicle_type"
 ```
 
-For a single-head task:
+For single-head classification:
 
 ```env
 HEADS="make"
 ```
+
+### 3. LLM Optimization Settings
+
+Specify which training parameters the LLM can modify after the baseline experiment:
+
+```env
+LLM_ALLOWED_CONFIG_KEYS=lr,weight_decay,gamma,alpha_json
+```
+
+**Supported parameters:**
+
+`epochs`, `batch_size`, `img_size`, `lr`, `weight_decay`, `gamma`, `patience`, `head_loss_weights`, `alpha_json`, `arch`
+
+Only the specified parameters can be modified. Set `LLM_ALLOWED_CONFIG_KEYS=all` to allow all supported parameters.
 
 ---
 
@@ -129,7 +141,7 @@ Example training a classifier with one prediction head:
 ```bash
 python main.py \
   --arch resnet18 \
-  --weights weights/pretrained/resnet18.pth \
+  --weights weights/resnet18.pth \
   --heads make \
   --nproc-per-node 1 \
   --target-metric make_acc \
@@ -147,7 +159,7 @@ Example training a classifier with multiple prediction heads:
 ```bash
 python main.py \
   --arch resnet18 \
-  --weights weights/pretrained/resnet18.pth \
+  --weights weights/resnet18.pth \
   --heads make vehicle_type \
   --nproc-per-node 1 \
   --target-metric mean_acc \
