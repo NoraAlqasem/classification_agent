@@ -12,7 +12,7 @@ from rich.prompt import Prompt
 
 from agent.llm_context import get_context_limits
 from agent.state import AgentState
-from tools.config_tools import get_optimizer_hyperparameter_limit
+from tools.config_tools import get_llm_allowed_config_keys, get_optimizer_hyperparameter_limit
 
 console = Console()
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -75,6 +75,11 @@ def user_input_node(state: AgentState) -> AgentState:
             validate_settings()
         except ValueError as exc:
             errors.append(str(exc))
+    try:
+        allowed_keys = get_llm_allowed_config_keys(state.get("llm_allowed_config_keys"))
+    except ValueError as exc:
+        errors.append(str(exc))
+        allowed_keys = frozenset()
     console.rule("[bold cyan]Autonomous ResNet Training Agent[/bold cyan]")
     console.print("[dim]Multi-head classification · PyTorch DistributedDataParallel[/dim]\n")
 
@@ -115,10 +120,12 @@ def user_input_node(state: AgentState) -> AgentState:
     heads = list(dict.fromkeys("vehicle_type" if head == "type" else head for head in heads))
 
     arch = str(state.get("model_type") or defaults.get("arch", "resnet18")).strip().lower()
-    weights = str(state.get("weights_path") or PROJECT_ROOT / "weights" / "pretrained" / f"{arch}.pth")
+    weights = str(state.get("weights_path") or PROJECT_ROOT / "weights" / f"{arch}.pth")
     target_metric = str(state.get("target_metric") or defaults.get("target_metric", "mean_acc")).strip()
     if "vehicle_type" in heads and target_metric in {"type", "type_acc"}:
         target_metric = "vehicle_type_acc"
+    elif "vehicle_type" in heads and target_metric in {"type_macro", "type_macro_acc", "type_macro_accuracy"}:
+        target_metric = "vehicle_type_macro_acc"
     target_raw = state.get("target_value")
     if target_raw is None or target_raw == "":
         target_raw = defaults.get("target_value", 0.85)
@@ -140,6 +147,7 @@ def user_input_node(state: AgentState) -> AgentState:
     console.print(f"[green]Retraining decisions:[/green] {decision_split} accuracy")
     console.print(f"[green]Heads:[/green] {', '.join(heads) or '(missing)'}")
     console.print(f"[green]Model:[/green] {arch} | GPUs/processes: {nproc}")
+    console.print(f"[green]LLM may change:[/green] {', '.join(sorted(allowed_keys)) or '(none; baseline only)'}")
     console.print(f"[green]Target:[/green] {target_metric} ≥ {target_value} | attempts: {max_attempts}\n")
 
     return {
@@ -159,6 +167,7 @@ def user_input_node(state: AgentState) -> AgentState:
         "target_value": target_value,
         "max_attempts": max_attempts,
         "export_format": export_format,
+        "llm_allowed_config_keys": sorted(allowed_keys),
         "input_errors": errors,
         "attempt_number": state.get("attempt_number", 0),
         "config_history": [],

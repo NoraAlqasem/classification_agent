@@ -5,7 +5,7 @@ from __future__ import annotations
 Example:
     python main.py --train-csv data/train.csv --val-csv data/val.csv \
         --data-root /path/to/images --heads make vehicle_type color \
-        --arch resnet18 --weights weights/pretrained/resnet18.pth
+        --arch resnet18 --weights weights/resnet18.pth
 """
 
 import argparse
@@ -17,13 +17,14 @@ from rich.console import Console
 console = Console()
 
 
-def _save_session_outcome(state: dict | None, status: str) -> None:
-    """Keep the session table factual when the graph stops before reporting."""
+def _save_session_outcome(state: dict | None, status: str, error: str | None = None) -> None:
+    """Keep the session summary factual when the graph stops before finalization."""
     if not state:
         return
     from pathlib import Path
     from agent.session_summary import write_session_summary
     from agent.nodes.monitor import _parse_results_csv
+    from agent.nodes.reporter import collect_session_errors
     from training.artifact_paths import find_training_file
 
     config = state.get("current_config", {})
@@ -48,11 +49,18 @@ def _save_session_outcome(state: dict | None, status: str) -> None:
                             "decision_split": state.get("decision_split", "val"),
                             "target_metric": state.get("target_metric", "mean_acc"),
                             "target_value": state.get("target_value"), "run_dir": str(run_dir)})
+    errors = collect_session_errors({**state, "experiment_history": history})
+    if error and error not in errors:
+        errors.append(error)
     try:
         write_session_summary(
             session_dir, history, status=status, heads=state.get("heads"),
             target_metric=state.get("target_metric", "mean_acc"),
             target_value=state.get("target_value"), decision_split=state.get("decision_split", "val"),
+            stop_reason="interrupted" if status == "Interrupted" else "error", errors=errors,
+            onnx_path=state.get("onnx_path", ""),
+            last_model_path=state.get("best_experiment", {}).get("last_weights", ""),
+            llm_allowed_config_keys=state.get("llm_allowed_config_keys"),
         )
     except (OSError, ValueError, TypeError) as exc:
         console.print(f"Unable to update session summary: {exc}", style="yellow", markup=False)
@@ -82,11 +90,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--alpha-json", default="", help="Optional per-head focal-alpha JSON")
     parser.add_argument("--head-loss-weights", nargs="*", default=None, metavar="HEAD=WEIGHT")
     parser.add_argument("--target-metric", default=defaults.get("target_metric", "mean_acc"),
-                        help="mean_acc or HEAD_acc")
+                        help="mean_acc, macro_acc, HEAD_acc, or HEAD_macro_acc")
     parser.add_argument("--target-value", type=float, default=defaults.get("target_value", 0.85),
                         help="Target accuracy between 0 and 1")
     parser.add_argument("--max-attempts", type=int, default=defaults.get("max_attempts", 5),
                         help="Maximum training attempts")
+    parser.add_argument("--llm-allowed-config-keys", nargs="+", default=None, metavar="KEY",
+                        help="Configuration keys the LLM may change (comma/space-separated); "
+                             "overrides LLM_ALLOWED_CONFIG_KEYS. Use all to allow supported keys "
+                             "(default), or none to lock all")
     parser.add_argument("--export", default=defaults.get("export_format", "onnx"), choices=["onnx", "none"])
     parser.add_argument("--validate-only", action="store_true",
                         help="Validate inputs and data without training, CUDA, or an OpenAI API key")
@@ -113,6 +125,7 @@ def main() -> None:
         "target_metric": args.target_metric,
         "target_value": args.target_value,
         "max_attempts": args.max_attempts,
+        "llm_allowed_config_keys": args.llm_allowed_config_keys,
         "model_type": args.arch,
         "weights_path": args.weights,
         "nproc_per_node": args.nproc_per_node,
@@ -154,19 +167,20 @@ def main() -> None:
         console.print("\n[yellow]Agent interrupted by user.[/yellow]")
         raise SystemExit(130)
     except Exception as exc:
-        _save_session_outcome(final_state, "Failed")
+        _save_session_outcome(final_state, "Failed", error=f"{type(exc).__name__}: {exc}")
         console.print(f"\n[bold red]Unhandled error:[/bold red] {exc}")
         raise
 
     if final_state:
-        summary = final_state.get("report_summary", {})
-        if summary.get("report_md"):
-            console.print(f"\n[bold green]Report saved:[/bold green] {summary['report_md']}")
-        if summary.get("onnx_path"):
-            console.print(f"[bold green]ONNX model:[/bold green] {summary['onnx_path']}")
-        if not final_state.get("is_valid", False) or final_state.get("stop_reason") == "error":
+        if final_state.get("session_summary_path"):
+            console.print(f"\n[bold green]Session summary saved:[/bold green] {final_state['session_summary_path']}")
+        if final_state.get("onnx_path"):
+            console.print(f"[bold green]ONNX model:[/bold green] {final_state['onnx_path']}")
+        if not final_state.get("is_valid", False) or final_state.get("stop_reason") in {"error", "unstable"}:
             raise SystemExit(1)
-        if not final_state.get("best_experiment") or final_state.get("error"):
+        if not final_state.get("best_experiment") or any(
+            final_state.get(key) for key in ("error", "optimisation_error", "export_error", "onnx_error")
+        ):
             raise SystemExit(1)
 
 

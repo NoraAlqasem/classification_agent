@@ -33,7 +33,7 @@ def route_after_decision(state: AgentState) -> str:
 
 
 def route_after_optimisation(state: AgentState) -> str:
-    if state.get("optimisation_status") == "error":
+    if state.get("optimisation_status") in {"error", "disabled"}:
         return "onnx_exporter"
     return "trainer"
 

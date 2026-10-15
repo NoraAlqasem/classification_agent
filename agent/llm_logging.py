@@ -112,7 +112,7 @@ def _write_record(record: dict[str, Any], path: Path) -> None:
 
 def invoke_logged_llm(messages: Sequence[Any], *, state: Mapping[str, Any],
                       stage: str, llm_factory: Callable[[], Any]) -> Any:
-    """Record status and parsed response only; report requests are not logged."""
+    """Record evaluation and optimization status and parsed responses."""
     attempt = state.get("attempt_number", 0)
     if stage not in _ALLOWED_STAGES or type(attempt) is not int or attempt < 1:
         return invoke_with_rate_limit_retry(llm_factory(), messages)

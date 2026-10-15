@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from typing import Any
 
 from langchain_core.tools import tool
@@ -18,13 +19,40 @@ HYPERPARAMETER_KEYS = frozenset({
     "epochs", "batch_size", "img_size", "lr", "weight_decay", "gamma",
     "patience", "head_loss_weights", "alpha_json",
 })
-MODEL_SELECTION_KEYS = frozenset({"arch", "weights"})
+MODEL_SELECTION_KEYS = frozenset({"arch"})
 TUNABLE_CONFIG_KEYS = HYPERPARAMETER_KEYS | MODEL_SELECTION_KEYS
 PROTECTED_CONFIG_KEYS = VALID_RESNET_CONFIG_KEYS - TUNABLE_CONFIG_KEYS
 
 
+def get_llm_allowed_config_keys(raw: Any = None) -> frozenset[str]:
+    """Resolve the user's editable fields; an explicit empty selection locks all."""
+    if raw is None:
+        raw = os.getenv("LLM_ALLOWED_CONFIG_KEYS", "all")
+    if isinstance(raw, str):
+        entries = [raw]
+    elif isinstance(raw, (list, tuple)) and all(isinstance(key, str) for key in raw):
+        entries = list(raw)
+    else:
+        raise ValueError("LLM_ALLOWED_CONFIG_KEYS must be a comma/space-separated list of configuration keys.")
+    keys = frozenset(key for entry in entries for key in re.split(r"[,\s]+", entry.strip()) if key)
+    if keys == {"all"}:
+        return TUNABLE_CONFIG_KEYS
+    if not keys or keys == {"none"}:
+        return frozenset()
+    if keys & {"all", "none"}:
+        raise ValueError("LLM_ALLOWED_CONFIG_KEYS: use 'all' or 'none' alone, or list specific keys.")
+    invalid = keys - TUNABLE_CONFIG_KEYS
+    if invalid:
+        hint = " Pretrained weights are selected automatically from weights/ when arch changes." if "weights" in invalid else ""
+        raise ValueError(
+            f"LLM_ALLOWED_CONFIG_KEYS contains unsupported or protected keys: {', '.join(sorted(invalid))}. "
+            f"Choose from: {', '.join(sorted(TUNABLE_CONFIG_KEYS))}, all, or none.{hint}"
+        )
+    return keys
+
+
 def get_optimizer_hyperparameter_limit() -> int:
-    """Read the maximum changed hyperparameter keys allowed in one proposal."""
+    """Read the changed-key limit; any class-weight edits in alpha_json count as one."""
     name = "LLM_OPTIMIZATION_MAX_HYPERPARAMETERS"
     raw = os.getenv(name, "5")
     error = f"{name} must be a positive integer; got {raw!r}."
@@ -61,8 +89,8 @@ def sanitize_resnet_config(config: dict[str, Any]) -> tuple[dict[str, Any], list
         raise ValueError("heads must be a nonempty list of column names")
     if len(set(heads)) != len(heads):
         raise ValueError("heads must be unique")
-    if clean["monitor"] not in ["mean", *heads]:
-        raise ValueError("monitor must be 'mean' or a requested head")
+    if clean["monitor"] not in ["mean", "macro", *heads, *(f"{head}_macro" for head in heads)]:
+        raise ValueError("monitor must be 'mean', 'macro', a requested head, or HEAD_macro")
     for key in ("epochs", "batch_size", "num_workers", "patience", "nproc_per_node"):
         value = clean[key]
         minimum = 0 if key == "num_workers" else 1

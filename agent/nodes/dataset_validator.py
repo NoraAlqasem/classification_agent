@@ -48,13 +48,23 @@ def _resolve_path(value: str) -> Path:
 
 
 def canonical_target_metric(metric: str, heads: list[str]) -> str:
-    """Accept mean/accuracy and head shorthand; retain the CSV head's case."""
+    """Accept overall and macro accuracy aliases; retain the CSV head's case."""
+    metric = metric.strip()
+    # An explicit case-sensitive head metric takes priority over aggregate aliases.
+    for head in heads:
+        if metric == f"{head}_acc":
+            return metric
     if metric.lower() in {"mean", "mean_acc", "accuracy"}:
         return "mean_acc"
+    if metric.lower() in {"macro", "macro_acc", "macro_accuracy", "balanced_accuracy"}:
+        return "macro_acc"
     for head in heads:
         if metric in {head, f"{head}_acc"}:
             return f"{head}_acc"
-    choices = ["mean_acc", *(f"{head}_acc" for head in heads)]
+        if metric in {f"{head}_macro", f"{head}_macro_acc", f"{head}_macro_accuracy"}:
+            return f"{head}_macro_acc"
+    choices = ["mean_acc", "macro_acc", *(f"{head}_acc" for head in heads),
+               *(f"{head}_macro_acc" for head in heads)]
     raise ValueError(f"Unknown target_metric {metric!r}. Choose one of {choices}.")
 
 
@@ -158,8 +168,12 @@ def dataset_validator_node(state: AgentState) -> AgentState:
     if not heads:
         report["errors"].append("No classification heads supplied. Use --heads with CSV label columns.")
     for head in heads:
-        if head == "mean" or head.startswith("final_"):
+        if head in {"mean", "macro"} or head.startswith("final_"):
             report["errors"].append(f"Head name {head!r} conflicts with the agent's accuracy metric names.")
+        if f"{head}_macro" in heads:
+            report["errors"].append(
+                f"Heads {head!r} and {head + '_macro'!r} conflict with per-head macro metric names."
+            )
         if not head or "." in head or head in _RESERVED_HEAD_NAMES:
             report["errors"].append(f"Head name {head!r} cannot be used as a PyTorch ModuleDict key.")
         if any(character in head for character in ",\n\r="):
@@ -192,7 +206,7 @@ def dataset_validator_node(state: AgentState) -> AgentState:
     if dataset:
         report["dataset_path"] = str(_resolve_path(dataset))
         updates["dataset_path"] = report["dataset_path"]
-    raw_weights = str(state.get("weights_path") or PROJECT_ROOT / "weights" / "pretrained" / f"{arch}.pth")
+    raw_weights = str(state.get("weights_path") or PROJECT_ROOT / "weights" / f"{arch}.pth")
     weights = str(_resolve_path(raw_weights))
     report["weights_path"] = updates["weights_path"] = weights
     if not Path(weights).is_file():

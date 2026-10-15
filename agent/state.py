@@ -20,11 +20,12 @@ class AgentState(TypedDict, total=False):
     nproc_per_node: int
     interactive: bool
     input_errors: list[str]
-    target_metric: str       # "mean_acc" or "HEAD_acc"
+    target_metric: str       # mean_acc, macro_acc, HEAD_acc, or HEAD_macro_acc
     target_value: float      # e.g. 0.85
     max_attempts: int
     model_type: str          # resnet18, resnet34, or resnet50
     export_format: str       # onnx or none
+    llm_allowed_config_keys: list[str]   # resolved user allowlist; empty locks all
 
     # ── Dataset validation ───────────────────────────────────────────────────
     validation_report: dict[str, Any]
@@ -57,20 +58,18 @@ class AgentState(TypedDict, total=False):
     best_experiment: dict[str, Any]
 
     # ── Configuration optimisation ────────────────────────────────────────────
-    optimisation_status: str             # success or error; failure stops retraining
+    optimisation_status: str             # success, disabled, or error
     optimisation_error: str              # retained even if export also fails
     optimisation_rationale: str          # LLM explanation of the changes made
 
     # ── Export ───────────────────────────────────────────────────────────────
     onnx_path: str
 
-    # ── Final report ─────────────────────────────────────────────────────────
-    final_report: str
-    report_summary: dict[str, Any]
+    # ── Session summary ──────────────────────────────────────────────────────
     session_summary_path: str
 
     # ── Control flow ─────────────────────────────────────────────────────────
-    stop_reason: str   # "target_reached" | "max_attempts" | "unstable" | "error"
+    stop_reason: str   # target_reached, max_attempts, no_allowed_changes, unstable, error
     error: str
 
     # ── LLM conversation log (accumulates) ───────────────────────────────────
