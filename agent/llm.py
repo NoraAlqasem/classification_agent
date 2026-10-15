@@ -11,7 +11,7 @@ from agent.llm_retry import get_retry_settings
 
 def get_llm():
     try:
-        max_tokens = int(os.getenv("LLM_MAX_TOKENS", "512"))
+        max_tokens = int(os.getenv("LLM_MAX_TOKENS", "1024"))
     except (TypeError, ValueError) as exc:
         raise ValueError("LLM_MAX_TOKENS must be a positive integer") from exc
     if max_tokens <= 0:

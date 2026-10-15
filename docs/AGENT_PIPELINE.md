@@ -73,7 +73,7 @@ Copy [`.env.example`](../.env.example) to `.env` and set your API key. The templ
 OPENAI_API_KEY=replace_with_your_api_key
 OPENAI_MODEL=gpt-4o
 LLM_TEMPERATURE=0.1
-LLM_MAX_TOKENS=512
+LLM_MAX_TOKENS=1024
 LLM_TIMEOUT_SECONDS=30
 LLM_MAX_RETRIES=2
 LLM_RATE_LIMIT_MAX_WAIT_SECONDS=60
@@ -89,7 +89,7 @@ LLM_CONTEXT_MAX_CLASSES_PER_HEAD=50
 |---|---|---|
 | `OPENAI_MODEL` | `gpt-4o` | Model passed to the chat client; `.env.example` uses the same default. |
 | `LLM_TEMPERATURE` | `0.1` | Sampling temperature. |
-| `LLM_MAX_TOKENS` | `512` | Positive output-token cap for each request. It does not cap input prompt tokens. |
+| `LLM_MAX_TOKENS` | `1024` | Positive output-token cap for each request. It does not cap input prompt tokens. |
 | `LLM_TIMEOUT_SECONDS` | `30` | Positive finite timeout configured on the client. |
 | `LLM_MAX_RETRIES` | `2` | Additional requests allowed after transient HTTP 429 errors; zero disables them. |
 | `LLM_RATE_LIMIT_MAX_WAIT_SECONDS` | `60` | Positive finite cumulative planned sleep budget for one LLM invocation. |
@@ -99,6 +99,8 @@ LLM_CONTEXT_MAX_CLASSES_PER_HEAD=50
 | `LLM_CONTEXT_RECENT_EXPERIMENTS` | `3` | Positive integer: recent current-session experiments retained in detailed compact form, plus an older best verified experiment when needed. Every earlier experiment also appears in a separate summary. |
 | `LLM_CONTEXT_MAX_ITEMS` | `3` | Positive integer: maximum items in each historical issues or recommendations list. |
 | `LLM_CONTEXT_MAX_CLASSES_PER_HEAD` | `50` | Positive integer: maximum tested class results retained per head, prioritizing lowest accuracy. |
+
+The `1024` token limit gives room for short JSON responses; larger per-class `alpha_json` updates may need `2048` or more.
 
 ### 3.3 Accuracy targets and checkpoint monitoring
 
